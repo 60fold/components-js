@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["vite/client"],
+    "paths": {
+      "@grid-benchmark/types": ["packages/grid/src/types.ts"],
+      "@grid-lifecycle/grid": ["packages/grid/src/index.ts"],
+      "@grid-lifecycle/profiles": ["benchmarks/grid/src/profiles.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

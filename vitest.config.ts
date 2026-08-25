@@ -10,6 +10,8 @@ const fromRoot = (path: string) => resolve(import.meta.dirname, path);
 const alias = [
   { find: /^@sixtyfold\/core\/(.*)$/, replacement: fromRoot("packages/core/src/$1") },
   { find: "@sixtyfold/core", replacement: fromRoot("packages/core/src/index.ts") },
+  { find: /^@sixtyfold\/grid\/(.*)$/, replacement: fromRoot("packages/grid/src/$1") },
+  { find: "@sixtyfold/grid", replacement: fromRoot("packages/grid/src/index.ts") },
   { find: /^@sixtyfold\/line\/(.*)$/, replacement: fromRoot("packages/line/src/$1") },
   { find: "@sixtyfold/line", replacement: fromRoot("packages/line/src/index.ts") },
   {
@@ -23,6 +25,11 @@ const alias = [
   { find: /^@sixtyfold\/mcp\/(.*)$/, replacement: fromRoot("packages/mcp/src/$1") },
   { find: "@sixtyfold/mcp", replacement: fromRoot("packages/mcp/src/index.ts") },
   { find: "@test/support", replacement: fromRoot("test/support") },
+];
+
+const gridBenchmarkAlias = [
+  ...alias,
+  { find: "@grid-benchmark/types", replacement: fromRoot("packages/grid/src/types.ts") },
 ];
 
 // One project per framework: the adapter packages need mutually incompatible
@@ -41,7 +48,15 @@ export default defineConfig({
         test: {
           name: "engines",
           environment: "jsdom",
-          include: ["packages/{core,line,stock,ssr,themes,mcp}/src/**/*.test.ts"],
+          include: ["packages/{core,grid,line,stock,ssr,themes,mcp}/src/**/*.test.ts"],
+        },
+      },
+      {
+        resolve: { alias: gridBenchmarkAlias },
+        test: {
+          name: "grid-benchmarks",
+          environment: "node",
+          include: ["benchmarks/grid/src/**/*.test.ts", "benchmarks/grid-summary/src/**/*.test.ts"],
         },
       },
       {

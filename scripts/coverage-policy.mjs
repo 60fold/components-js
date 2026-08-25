@@ -9,6 +9,7 @@ export const exactCoverageThresholdTargets = [
 
 export const coverageIncludePatterns = [
   "packages/core/src/**/*.ts",
+  "packages/grid/src/data/**/*.ts",
   "packages/line/src/lineRenderer.ts",
   "packages/line/src/engine/**/*.ts",
   "packages/stock/src/stockRenderer.ts",

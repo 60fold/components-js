@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["vite/client"],
+    "paths": {
+      "@grid-interaction/grid": ["packages/grid/src/index.ts"],
+      "@grid-interaction/telemetry": ["packages/grid/src/internal/surfaceTelemetry.ts"],
+      "@grid-interaction/profiles": ["benchmarks/grid/src/profiles.ts"],
+      "@grid-interaction/types": ["packages/grid/src/types.ts"],
+      "@grid-benchmark/types": ["packages/grid/src/types.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

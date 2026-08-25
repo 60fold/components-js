@@ -1,0 +1,51 @@
+{
+  "name": "@sixtyfold/grid",
+  "version": "1.0.0",
+  "description": "Worker-first Canvas2D data grid for large typed-column datasets.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Different Planet - Unipessoal Lda.",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/60fold/components-js.git",
+    "directory": "packages/grid"
+  },
+  "homepage": "https://sixtyfold.dev/en/docs/grid",
+  "bugs": {
+    "url": "https://github.com/60fold/components-js/issues"
+  },
+  "keywords": [
+    "sixtyfold",
+    "data-grid",
+    "canvas",
+    "canvas2d",
+    "columnar",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.types.json && node ../../scripts/prune-private-declarations.mjs dist/accessibility dist/data dist/editing dist/internal dist/rendering dist/runtime dist/summary dist/view",
+    "dev": "vite build --watch --emptyOutDir=false",
+    "typecheck": "tsc -p tsconfig.types.json --noEmit"
+  }
+}

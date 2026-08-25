@@ -256,6 +256,8 @@ importers:
 
   packages/core: {}
 
+  packages/grid: {}
+
   packages/line:
     dependencies:
       '@sixtyfold/core':

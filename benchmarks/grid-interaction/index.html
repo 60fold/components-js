@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sixtyfold Grid interaction pipeline benchmark</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        min-height: 100%;
+        overflow: hidden;
+        background: #080c12;
+        color: #d9e2ef;
+        font:
+          12px/1.4 ui-monospace,
+          monospace;
+      }
+
+      main {
+        padding: 12px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      #grid-host {
+        width: 960px;
+        height: 540px;
+        contain: strict;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Grid interaction pipeline benchmark</h1>
+      <output id="status">Starting…</output>
+      <div id="grid-host"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
