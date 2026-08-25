@@ -1,4 +1,4 @@
-name: Sixtyfold Charts CI
+name: Sixtyfold Components CI
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 concurrency:
-  group: sixtyfold-charts-js-ci-${{ github.workflow }}-${{ github.ref }}
+  group: sixtyfold-components-js-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

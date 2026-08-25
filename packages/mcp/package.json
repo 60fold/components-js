@@ -34,12 +34,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/60fold/charts-js.git",
+    "url": "git+https://github.com/60fold/components-js.git",
     "directory": "packages/mcp"
   },
   "homepage": "https://sixtyfold.dev/en/docs/mcp",
   "bugs": {
-    "url": "https://github.com/60fold/charts-js/issues"
+    "url": "https://github.com/60fold/components-js/issues"
   },
   "keywords": [
     "sixtyfold",

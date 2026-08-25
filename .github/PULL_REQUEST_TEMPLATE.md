@@ -16,7 +16,7 @@ Sixtyfold Components is a source-available commercial product. Contributions may
 be distributed by the project owner under the public PolyForm Noncommercial
 license and under separate commercial or proprietary licenses. You retain
 ownership of your contribution. See the
-[Sixtyfold Contributor License Agreement Version 1.0](https://github.com/60fold/charts-js/blob/main/CONTRIBUTOR_LICENSE_AGREEMENT.md).
+[Sixtyfold Contributor License Agreement Version 1.0](https://github.com/60fold/components-js/blob/main/CONTRIBUTOR_LICENSE_AGREEMENT.md).
 
 - [ ] I accept the Sixtyfold Contributor License Agreement Version 1.0 for this contribution.
 - [ ] I have the right to submit this work, including authorization from my employer or another rights holder where required.

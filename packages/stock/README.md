@@ -106,7 +106,7 @@ enough.
 
 Provide a localized canvas name and an adjacent summary or table for production
 charts. Keyboard semantics and framework-specific attributes are documented in
-the [accessibility integration guide](https://github.com/60fold/charts-js/blob/main/ACCESSIBILITY.md).
+the [accessibility integration guide](https://github.com/60fold/components-js/blob/main/ACCESSIBILITY.md).
 
 Pure OHLCV utilities, analytics, and market-layer types are exported from
 `@sixtyfold/stock/ohlcv`, `/analytics`, and `/market-layers`.

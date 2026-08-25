@@ -62,7 +62,7 @@ The package is ESM-only. The renderer engine is also available from
 
 Provide a localized canvas name and an adjacent summary or table for production
 charts. Keyboard semantics and framework-specific attributes are documented in
-the [accessibility integration guide](https://github.com/60fold/charts-js/blob/main/ACCESSIBILITY.md).
+the [accessibility integration guide](https://github.com/60fold/components-js/blob/main/ACCESSIBILITY.md).
 
 For live dashboards that must not rescale as new extrema arrive, construct the
 chart with `yDomain: { min: 0, max: 100 }`. Either edge may be omitted to keep

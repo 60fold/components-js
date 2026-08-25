@@ -6,7 +6,7 @@ Thank you for considering a contribution to Sixtyfold Components.
 
 Sixtyfold Components is a source-available commercial product of
 **Different Planet - Unipessoal Lda.** The public repository is licensed under the
-[PolyForm Noncommercial License 1.0.0](https://github.com/60fold/charts-js/blob/main/LICENSE.md),
+[PolyForm Noncommercial License 1.0.0](https://github.com/60fold/components-js/blob/main/LICENSE.md),
 and Different Planet - Unipessoal Lda. also offers the product under separate
 commercial and proprietary licenses at [https://sixtyfold.dev](https://sixtyfold.dev).
 

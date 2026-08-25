@@ -44,12 +44,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/60fold/charts-js.git",
+    "url": "git+https://github.com/60fold/components-js.git",
     "directory": "packages/stock"
   },
   "homepage": "https://sixtyfold.dev/en/docs/stock",
   "bugs": {
-    "url": "https://github.com/60fold/charts-js/issues"
+    "url": "https://github.com/60fold/components-js/issues"
   },
   "keywords": [
     "sixtyfold",

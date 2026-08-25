@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for helping improve Sixtyfold Components. Search existing issues before filing a report. For a security vulnerability, stop here and follow the [security policy](https://github.com/60fold/charts-js/security/policy).
+        Thank you for helping improve Sixtyfold Components. Search existing issues before filing a report. For a security vulnerability, stop here and follow the [security policy](https://github.com/60fold/components-js/security/policy).
 
   - type: checkboxes
     id: checks

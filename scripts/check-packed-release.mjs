@@ -204,7 +204,7 @@ async function inspectArchive(archivePath, sourceManifest, workspaceVersions) {
     `${sourceManifest.name}: registry is not canonical`,
   );
   assert(
-    packedManifest.repository?.url === "git+https://github.com/60fold/charts-js.git",
+    packedManifest.repository?.url === "git+https://github.com/60fold/components-js.git",
     `${sourceManifest.name}: repository metadata is not canonical`,
   );
   assert(
@@ -213,7 +213,7 @@ async function inspectArchive(archivePath, sourceManifest, workspaceVersions) {
     `${sourceManifest.name}: homepage metadata is missing`,
   );
   assert(
-    packedManifest.bugs?.url === "https://github.com/60fold/charts-js/issues",
+    packedManifest.bugs?.url === "https://github.com/60fold/components-js/issues",
     `${sourceManifest.name}: bugs metadata is not canonical`,
   );
   assert(
