@@ -620,9 +620,9 @@ export class LineChart extends BaseChart<LineChartOptions> {
       );
     }
     this.flushViewportInputs();
-    // Queue the data point for batching
+    // Snapshot the scalar sample so callers can reuse values before the batched flush.
     this.pendingTimestamps.push(timestamp);
-    this.pendingValues.push(values);
+    this.pendingValues.push(values.slice());
 
     // Schedule flush if not already scheduled
     if (!this.batchFlushScheduled) {
