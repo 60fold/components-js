@@ -13,15 +13,15 @@ interface SeriesAppearanceHarness {
 interface AddVectorsHarness {
   destroyed: boolean;
   expectedSeriesCount: number;
+  pendingTimestamps: number[];
+  pendingValues: number[][];
+  batchFlushFrame: number | null;
   flushViewportInputs: PostMessageMock;
   worker: { postMessage: PostMessageMock };
   addVectors: LineChart["addVectors"];
 }
 
 interface AddVectorHarness extends AddVectorsHarness {
-  pendingTimestamps: number[];
-  pendingValues: number[][];
-  batchFlushScheduled: boolean;
   addVector: LineChart["addVector"];
 }
 
@@ -72,7 +72,7 @@ describe("LineChart.addVector", () => {
     chart.expectedSeriesCount = 2;
     chart.pendingTimestamps = [];
     chart.pendingValues = [];
-    chart.batchFlushScheduled = false;
+    chart.batchFlushFrame = null;
     chart.flushViewportInputs = vi.fn();
     chart.worker = { postMessage };
     return {
@@ -133,6 +133,9 @@ describe("LineChart.addVectors", () => {
     const chart = Object.create(LineChart.prototype) as AddVectorsHarness;
     chart.destroyed = false;
     chart.expectedSeriesCount = expectedSeriesCount;
+    chart.pendingTimestamps = [];
+    chart.pendingValues = [];
+    chart.batchFlushFrame = null;
     chart.flushViewportInputs = vi.fn();
     chart.worker = { postMessage };
     return { chart, postMessage };

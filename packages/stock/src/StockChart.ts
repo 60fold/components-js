@@ -324,7 +324,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     close: number;
     volume: number;
   }[] = [];
-  private batchFlushScheduled = false;
+  private batchFlushFrame: number | null = null;
   private streamingCapacity: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, options: StockChartOptions = {}) {
@@ -634,7 +634,6 @@ export class StockChart extends BaseChart<StockChartOptions> {
     if (this.destroyed) return;
     data = normalizeOHLCVData(data);
     this.flushViewportInputs();
-    this.streamingCapacity = null;
     const transferList = collectTransferables([
       data.timestamp,
       data.open,
@@ -643,6 +642,8 @@ export class StockChart extends BaseChart<StockChartOptions> {
       data.close,
       data.volume,
     ]);
+    this.discardPendingCandles();
+    this.streamingCapacity = null;
     this.worker.postMessage(
       {
         type: "setData",
@@ -667,6 +668,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     }
     assertValidIndicators(this.optionsShadow.indicators as StockIndicator[], maxCandles);
     this.flushViewportInputs();
+    this.discardPendingCandles();
     this.streamingCapacity = maxCandles;
     this.worker.postMessage({
       type: "initRingBuffer",
@@ -689,17 +691,33 @@ export class StockChart extends BaseChart<StockChartOptions> {
     this.flushViewportInputs();
     this.pendingCandles.push({ timestamp, open, high, low, close, volume });
 
-    if (!this.batchFlushScheduled) {
-      this.batchFlushScheduled = true;
-      requestAnimationFrame(() => this.flushBatch());
+    if (this.batchFlushFrame === null) {
+      const frame = requestAnimationFrame(() => {
+        if (this.batchFlushFrame !== frame) return;
+        this.batchFlushFrame = null;
+        this.flushBatch();
+      });
+      this.batchFlushFrame = frame;
     }
   }
 
-  private flushBatch(): void {
-    this.batchFlushScheduled = false;
+  private cancelBatchFlush(): void {
+    if (this.batchFlushFrame != null) cancelAnimationFrame(this.batchFlushFrame);
+    this.batchFlushFrame = null;
+  }
 
-    const count = this.pendingCandles.length;
-    if (count === 0) return;
+  private discardPendingCandles(): void {
+    this.cancelBatchFlush();
+    // BaseChart may call destroy() before subclass field initialization.
+    this.pendingCandles = [];
+  }
+
+  private flushBatch(): void {
+    this.cancelBatchFlush();
+    const pendingCandles = this.pendingCandles;
+    this.pendingCandles = [];
+    const count = pendingCandles.length;
+    if (this.destroyed || count === 0) return;
 
     const timestamps = new Float64Array(count);
     const opens = new Float64Array(count);
@@ -709,7 +727,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     const volumes = new Float64Array(count);
 
     for (let i = 0; i < count; i++) {
-      const c = this.pendingCandles[i];
+      const c = pendingCandles[i];
       timestamps[i] = c.timestamp;
       opens[i] = c.open;
       highs[i] = c.high;
@@ -718,9 +736,15 @@ export class StockChart extends BaseChart<StockChartOptions> {
       volumes[i] = c.volume;
     }
 
-    this.pendingCandles.length = 0;
-
-    this.addCandles(timestamps, opens, highs, lows, closes, volumes);
+    this.flushViewportInputs();
+    this.sendCandles(timestamps, opens, highs, lows, closes, volumes, {}, [
+      timestamps.buffer,
+      opens.buffer,
+      highs.buffer,
+      lows.buffer,
+      closes.buffer,
+      volumes.buffer,
+    ]);
   }
 
   /**
@@ -741,6 +765,20 @@ export class StockChart extends BaseChart<StockChartOptions> {
     if (this.destroyed) return;
     this.flushViewportInputs();
     const transferList = collectTransferables([timestamps, opens, highs, lows, closes, volumes]);
+    this.flushBatch();
+    this.sendCandles(timestamps, opens, highs, lows, closes, volumes, options, transferList);
+  }
+
+  private sendCandles(
+    timestamps: Float64Array,
+    opens: Float64Array,
+    highs: Float64Array,
+    lows: Float64Array,
+    closes: Float64Array,
+    volumes: Float64Array,
+    options: StockAddCandlesOptions,
+    transferList: Transferable[],
+  ): void {
     this.worker.postMessage(
       {
         type: "addCandles",
@@ -783,6 +821,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
         batch.volume,
       ]),
     );
+    this.flushBatch();
     this.worker.postMessage(
       {
         type: "addCandleBatches",
@@ -970,6 +1009,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
   }
 
   destroy(): void {
+    this.discardPendingCandles();
     super.destroy();
     this.onStatsUpdate = null;
     this.onTimeRangeChange = undefined;

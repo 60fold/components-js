@@ -408,7 +408,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
   // Batching for high-frequency addVector calls
   private pendingTimestamps: number[] = [];
   private pendingValues: number[][] = [];
-  private batchFlushScheduled = false;
+  private batchFlushFrame: number | null = null;
   private expectedSeriesCount = 0;
   private dataVersion = 0;
 
@@ -601,6 +601,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
   initStreaming(seriesCount: number, maxPoints: number = 5_000_000): void {
     if (this.destroyed) return;
     this.flushViewportInputs();
+    this.discardPendingBatch();
     this.expectedSeriesCount = seriesCount;
     const dataVersion = ++this.dataVersion;
     this.worker.postMessage({
@@ -625,14 +626,31 @@ export class LineChart extends BaseChart<LineChartOptions> {
     this.pendingValues.push(values.slice());
 
     // Schedule flush if not already scheduled
-    if (!this.batchFlushScheduled) {
-      this.batchFlushScheduled = true;
-      requestAnimationFrame(() => this.flushBatch());
+    if (this.batchFlushFrame === null) {
+      const frame = requestAnimationFrame(() => {
+        if (this.batchFlushFrame !== frame) return;
+        this.batchFlushFrame = null;
+        this.flushBatch();
+      });
+      this.batchFlushFrame = frame;
     }
   }
 
+  private cancelBatchFlush(): void {
+    // Invalidate callbacks that were already selected for an animation frame.
+    // Cleanup may run during super(), before the subclass fields initialize.
+    if (this.batchFlushFrame != null) cancelAnimationFrame(this.batchFlushFrame);
+    this.batchFlushFrame = null;
+  }
+
+  private discardPendingBatch(): void {
+    this.cancelBatchFlush();
+    this.pendingTimestamps = [];
+    this.pendingValues = [];
+  }
+
   private flushBatch(): void {
-    this.batchFlushScheduled = false;
+    this.cancelBatchFlush();
 
     const count = this.pendingTimestamps.length;
     if (count === 0) return;
@@ -652,7 +670,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
     this.pendingTimestamps.length = 0;
     this.pendingValues.length = 0;
 
-    this.addVectors(timestamps, valuesBySeries);
+    this.postVectors(timestamps, valuesBySeries);
   }
 
   addVectors(timestamps: Float64Array, valuesBySeries: Float64Array[]): void {
@@ -670,6 +688,11 @@ export class LineChart extends BaseChart<LineChartOptions> {
         );
       }
     }
+    this.flushBatch();
+    this.postVectors(timestamps, valuesBySeries);
+  }
+
+  private postVectors(timestamps: Float64Array, valuesBySeries: Float64Array[]): void {
     this.flushViewportInputs();
     const transferList = collectTransferables([timestamps, ...valuesBySeries]);
     this.worker.postMessage(
@@ -703,6 +726,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
     if (this.destroyed) return this.dataVersion;
     assertValidLineData(data, false);
     this.flushViewportInputs();
+    this.discardPendingBatch();
     const dataVersion = ++this.dataVersion;
     const transferList = collectTransferables([data.x, data.y]);
     this.worker.postMessage(
@@ -738,6 +762,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
     if (this.destroyed) return this.dataVersion;
     assertValidLineData(data, true);
     this.flushViewportInputs();
+    this.discardPendingBatch();
     const dataVersion = ++this.dataVersion;
     const transferList = collectTransferables([data.x, ...data.series]);
     this.worker.postMessage(
@@ -870,6 +895,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
   }
 
   override destroy(): void {
+    this.discardPendingBatch();
     this.legendEventsAbortController?.abort();
     super.destroy();
     this.onStatsUpdate = null;
