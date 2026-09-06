@@ -7,6 +7,7 @@ import type {
   RenderContext2D,
 } from "@sixtyfold/core/internal/renderer";
 import type { LineSeriesData } from "@sixtyfold/core/data/seriesTypes";
+import { StreamingBoundsIndex } from "./engine/streamingBounds.js";
 import {
   WorkerState,
   drawGrid,
@@ -1206,6 +1207,9 @@ export function createLineChartEngine(
   }
 
   let stackedBoundsIndex: StackedBoundsIndex | null = null;
+  // Global streaming bounds include hidden series and full stack totals, unlike
+  // the visible-stack viewport index above. Only written physical blocks change.
+  let streamingBoundsIndex: StreamingBoundsIndex | null = null;
 
   // Ring buffer state
   let ringBufferMode = false;
@@ -1366,6 +1370,19 @@ export function createLineChartEngine(
   function getStoredPhysicalLength(): number {
     if (ringBufferMode && bufferFull) return ringBufferMaxPoints;
     return dataLength;
+  }
+
+  function rebuildStreamingBoundsIndex(): void {
+    if (!ringBufferMode) {
+      streamingBoundsIndex = null;
+      return;
+    }
+    streamingBoundsIndex = new StreamingBoundsIndex(
+      dataSeries,
+      ringBufferMaxPoints,
+      dataSeries.map((_, index) => isStackedAreaSeriesType(getSeriesType(index))),
+    );
+    streamingBoundsIndex.rebuild(getStoredPhysicalLength());
   }
 
   function updateStackedBoundsTreeAncestors(blockIndex: number): void {
@@ -1802,6 +1819,7 @@ export function createLineChartEngine(
     lodRebuildDeadline = 0;
     lodBuildGeneration++;
     ringBufferMode = false;
+    streamingBoundsIndex = null;
     state.dataLoadStartTime = 0;
     state.viewportAnimation.active = false;
     state.yAnimation.active = false;
@@ -1865,6 +1883,7 @@ export function createLineChartEngine(
     clearScheduledLODRebuild();
     lodBuildGeneration++;
     ringBufferMode = false;
+    streamingBoundsIndex = null;
     writeIndex = 0;
     bufferFull = false;
     previousDataLength = 0;
@@ -2004,6 +2023,7 @@ export function createLineChartEngine(
       dataSeries.push(new Float64Array(maxPoints));
     }
     rebuildStackedBoundsIndex();
+    rebuildStreamingBoundsIndex();
 
     state.dataBounds = { xMin: 0, xMax: 1, yMin: 0, yMax: 100 };
     const initialY = applyYDomain(0, 100, yDomain);
@@ -2042,6 +2062,7 @@ export function createLineChartEngine(
         dataSeries[s][writeIndex] = valuesBySeries[s][i];
       }
       markStackedBoundsBlockDirty(writeIndex);
+      streamingBoundsIndex?.markDirty(writeIndex);
       writeIndex = (writeIndex + 1) % ringBufferMaxPoints;
       totalPointsReceived++;
       if (!bufferFull && writeIndex === 0) bufferFull = true;
@@ -2050,6 +2071,7 @@ export function createLineChartEngine(
     dataLength = bufferFull ? ringBufferMaxPoints : writeIndex;
     lodSourceRevision++;
     flushDirtyStackedBoundsBlocks();
+    streamingBoundsIndex?.flush(dataLength);
     if (dataLength > 0) recalculateBounds();
 
     updateRawLODLevelLengths();
@@ -2069,47 +2091,19 @@ export function createLineChartEngine(
     const previousBounds = state.dataBounds;
     const previousViewport = state.viewport;
 
-    let yMin = Infinity,
-      yMax = -Infinity;
+    let yMin = streamingBoundsIndex?.min ?? Infinity;
+    let yMax = streamingBoundsIndex?.max ?? -Infinity;
     for (let s = 0; s < seriesConfig.count; s++) {
       const barBaseline = getBarBaselineForBounds(s);
       if (barBaseline !== null) {
         if (barBaseline < yMin) yMin = barBaseline;
         if (barBaseline > yMax) yMax = barBaseline;
       }
-    }
-    for (let i = 0; i < dataLength; i++) {
-      for (let s = 0; s < seriesConfig.count; s++) {
-        if (hasRangeData(s)) {
-          const low = getRangeLowerAt(s, i);
-          const high = getRangeUpperAt(s, i);
-          if (Number.isFinite(low)) {
-            if (low < yMin) yMin = low;
-            if (low > yMax) yMax = low;
-          }
-          if (Number.isFinite(high)) {
-            if (high < yMin) yMin = high;
-            if (high > yMax) yMax = high;
-          }
-        }
-
-        const y = dataSeries[s][i];
-        if (Number.isFinite(y)) {
-          if (y < yMin) yMin = y;
-          if (y > yMax) yMax = y;
-        }
+      if (isStackedAreaSeriesType(getSeriesType(s))) {
+        if (0 < yMin) yMin = 0;
+        if (0 > yMax) yMax = 0;
       }
     }
-
-    includeStackedAreaBounds(
-      0,
-      dataLength - 1,
-      () => true,
-      (value) => {
-        if (value < yMin) yMin = value;
-        if (value > yMax) yMax = value;
-      },
-    );
 
     // Shared normalization (NaN fallback + degenerate-span expansion).
     const bounds = normalizeBounds(getXAt(0), getXAt(dataLength - 1), yMin, yMax, minRange);
@@ -7292,7 +7286,10 @@ export function createLineChartEngine(
         gradientCache.clear();
         const isStacked =
           index < seriesConfig.count && isStackedAreaSeriesType(getSeriesType(index));
-        if (wasStacked !== isStacked) rebuildStackedBoundsIndex();
+        if (wasStacked !== isStacked) {
+          rebuildStackedBoundsIndex();
+          rebuildStreamingBoundsIndex();
+        }
         if (patch.marker) resetMarkerCache();
         presentationResolvedRangeGridDelta = NaN;
         state.cacheValid = false;
