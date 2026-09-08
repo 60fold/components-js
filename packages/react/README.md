@@ -35,6 +35,13 @@ development effect probe is handled without transferring the initial data twice,
 and a dataset supplied before the chart finishes initializing is installed once
 it is ready rather than sent twice.
 
+React's `Activity` can hide and reveal a mounted chart without recreating its
+canvas or renderer, copying data, or retransferring detached buffers. Prop updates
+and readiness/error notifications wait until reveal; stats and series-visibility
+callbacks are disconnected while hidden. `onReady` runs once per chart instance.
+The retained renderer still owns its memory and worker until the component is
+actually unmounted, including when it is unmounted while hidden.
+
 Renderer stats are collected only while `onStats` is supplied. Leaving
 `viewportAnimated` unset inherits the chart's own `animated` option; setting it
 overrides that per update.

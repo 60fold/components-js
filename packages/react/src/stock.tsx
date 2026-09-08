@@ -15,6 +15,7 @@ import {
   type StockChartStats,
 } from "@sixtyfold/stock";
 import { hasViewport, type ChartHandle } from "./shared.js";
+import { useChartLifetime } from "./useChartLifetime.js";
 
 export type StockChartHandle = ChartHandle<StockChart>;
 
@@ -59,7 +60,7 @@ export const SixtyfoldStockChart = forwardRef<StockChartHandle, SixtyfoldStockCh
     forwardedRef,
   ) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const chartRef = useRef<StockChart | null>(null);
+    const lifetimeRef = useChartLifetime<StockChart>();
     const initialOptionsRef = useRef(options);
     const latestRef = useRef({
       data,
@@ -71,7 +72,6 @@ export const SixtyfoldStockChart = forwardRef<StockChartHandle, SixtyfoldStockCh
       onStats,
       statsIntervalMs,
     });
-    const readyRef = useRef(false);
     const appliedDataRef = useRef<OHLCVData | undefined>(undefined);
     const appliedAppearanceRef = useRef<DeepPartial<StockAppearanceOptions> | undefined>(undefined);
     const appliedViewportRef = useRef<Partial<Viewport> | undefined>(undefined);
@@ -80,10 +80,10 @@ export const SixtyfoldStockChart = forwardRef<StockChartHandle, SixtyfoldStockCh
       forwardedRef,
       () => ({
         get chart() {
-          return chartRef.current;
+          return lifetimeRef.current.active ? lifetimeRef.current.chart : null;
         },
       }),
-      [],
+      [lifetimeRef],
     );
 
     // Publish only committed props. Mutating this ref during render can expose
@@ -106,8 +106,8 @@ export const SixtyfoldStockChart = forwardRef<StockChartHandle, SixtyfoldStockCh
     // Worker mode transfers its buffers; identity tracking also prevents
     // duplicate installs in main-thread mode.
     const applyReactiveProps = useCallback((): void => {
-      const chart = chartRef.current;
-      if (!readyRef.current || !chart) return;
+      const { chart, ready, active } = lifetimeRef.current;
+      if (!active || !ready || !chart) return;
       const current = latestRef.current;
       chart.batch(() => {
         if (current.data && current.data !== appliedDataRef.current) {
@@ -123,70 +123,111 @@ export const SixtyfoldStockChart = forwardRef<StockChartHandle, SixtyfoldStockCh
           appliedViewportRef.current = current.viewport;
         }
       });
-    }, []);
+    }, [lifetimeRef]);
+
+    const reportError = useCallback(
+      (error: unknown): void => {
+        const lifetime = lifetimeRef.current;
+        if (lifetime.disposed) return;
+        if (lifetime.active) latestRef.current.onError?.(error);
+        else lifetime.pendingErrors.push(error);
+      },
+      [lifetimeRef],
+    );
+
+    const connectReadyChart = useCallback((): void => {
+      const lifetime = lifetimeRef.current;
+      if (!lifetime.active || !lifetime.ready || !lifetime.chart) return;
+      const chart = lifetime.chart;
+      applyReactiveProps();
+      if (!lifetime.active || lifetime.disposed || lifetime.chart !== chart) return;
+      if (!lifetime.readyNotified) {
+        lifetime.readyNotified = true;
+        latestRef.current.onReady?.(chart);
+      }
+    }, [applyReactiveProps, lifetimeRef]);
 
     useEffect(() => {
-      let disposed = false;
-      let mountedChart: StockChart | null = null;
+      const lifetime = lifetimeRef.current;
+      lifetime.active = true;
+      let disconnected = false;
+      // Skip Strict Mode's development-only setup/cleanup probe.
       queueMicrotask(() => {
-        if (disposed || !canvasRef.current) return;
-        let chart: StockChart;
-        try {
-          chart = new StockChart(canvasRef.current, initialOptionsRef.current ?? {});
-        } catch (error) {
-          // Construction is deferred into a microtask, so a throw here would
-          // otherwise escape as an uncaught error no error boundary can see.
-          if (!disposed) latestRef.current.onError?.(error);
-          return;
+        if (disconnected || lifetime.disposed || !canvasRef.current) return;
+        while (lifetime.pendingErrors.length > 0) {
+          const error = lifetime.pendingErrors.shift();
+          latestRef.current.onError?.(error);
+          // Error handlers may synchronously hide or unmount the host.
+          if (disconnected || lifetime.disposed || !canvasRef.current) return;
         }
-        mountedChart = chart;
-        chartRef.current = chart;
-        let reportedRendererError: unknown;
-        chart.setRendererErrorCallback((error) => {
-          reportedRendererError = error;
-          if (!disposed) latestRef.current.onError?.(error);
-        });
-        chart.setOverlayErrorCallback((error) => {
-          if (!disposed) latestRef.current.onError?.(error);
-        });
+        let chart = lifetime.chart;
+        if (!chart) {
+          try {
+            chart = new StockChart(canvasRef.current, initialOptionsRef.current ?? {});
+          } catch (error) {
+            // Construction is deferred, so report rather than throwing outside React.
+            reportError(error);
+            return;
+          }
+          lifetime.chart = chart;
+          let reportedRendererError: unknown;
+          chart.setRendererErrorCallback((error) => {
+            reportedRendererError = error;
+            reportError(error);
+          });
+          chart.setOverlayErrorCallback(reportError);
+          void chart
+            .initialize()
+            .then(() => {
+              if (lifetime.disposed || lifetime.chart !== chart) return;
+              lifetime.ready = true;
+              connectReadyChart();
+            })
+            .catch((error) => {
+              if (error !== reportedRendererError) reportError(error);
+            });
+        }
         const latest = latestRef.current;
         chart.setStatsCallback(
-          latest.onStats ? (stats) => latestRef.current.onStats?.(stats) : null,
+          latest.onStats
+            ? (stats) => {
+                if (lifetime.active) latestRef.current.onStats?.(stats);
+              }
+            : null,
           { intervalMs: latest.statsIntervalMs },
         );
-        void chart
-          .initialize()
-          .then(() => {
-            if (disposed || chartRef.current !== chart) return;
-            readyRef.current = true;
-            applyReactiveProps();
-            latestRef.current.onReady?.(chart);
-          })
-          .catch((error) => {
-            if (!disposed && error !== reportedRendererError) {
-              latestRef.current.onError?.(error);
-            }
-          });
+        try {
+          connectReadyChart();
+        } catch (error) {
+          reportError(error);
+        }
       });
       return () => {
-        disposed = true;
-        readyRef.current = false;
-        if (chartRef.current === mountedChart) chartRef.current = null;
-        mountedChart?.destroy();
+        disconnected = true;
+        lifetime.active = false;
+        // Keep the renderer across Activity hiding, but disconnect telemetry.
+        lifetime.chart?.setStatsCallback(null);
       };
-    }, [applyReactiveProps]);
+    }, [connectReadyChart, lifetimeRef, reportError]);
 
     useEffect(() => {
       applyReactiveProps();
     }, [applyReactiveProps, data, appearance, viewport, viewportAnimated]);
 
     useEffect(() => {
-      const chart = chartRef.current;
-      if (!chart) return;
-      chart.setStatsCallback(onStats ? (stats) => latestRef.current.onStats?.(stats) : null, {
-        intervalMs: statsIntervalMs,
-      });
-    }, [onStats, statsIntervalMs]);
+      const lifetime = lifetimeRef.current;
+      if (!lifetime.active || !lifetime.chart) return;
+      lifetime.chart.setStatsCallback(
+        onStats
+          ? (stats) => {
+              if (lifetime.active) latestRef.current.onStats?.(stats);
+            }
+          : null,
+        {
+          intervalMs: statsIntervalMs,
+        },
+      );
+    }, [lifetimeRef, onStats, statsIntervalMs]);
 
     return (
       <canvas
