@@ -107,6 +107,11 @@
       .initialize()
       .then(() => {
         if (disposed || chart !== instance) return;
+        // Publish readiness only after the initial batch succeeds. Setting
+        // ready alone schedules a later reactive update, which would run after
+        // onReady and could overwrite changes made by the callback.
+        applyReactiveProps(true, instance, data, appearance, viewport, viewportAnimated);
+        if (disposed || chart !== instance) return;
         ready = true;
         onReady?.(instance);
       })

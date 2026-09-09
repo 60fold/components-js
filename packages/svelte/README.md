@@ -26,6 +26,11 @@ automatically. Construction options are read once; data, appearance, viewport,
 and callback props are reactive. Use a fresh data object for each transferable
 bulk update.
 
+`onReady` runs after renderer initialization and after the current data,
+appearance, and viewport props have been submitted in one batch. Imperative
+changes made inside the callback are not overwritten by the pending initial
+reactive update. This callback does not wait for the resulting canvas frame.
+
 Prefer `$state.raw` for datasets. `$state` deep-proxies the surrounding object
 graph, which costs more than it buys for bulk data the renderer only reads
 once.

@@ -96,6 +96,10 @@
       .initialize()
       .then(() => {
         if (disposed || chart !== instance) return;
+        // Install props before publishing readiness; the scheduled reactive
+        // pass must not overwrite imperative changes made inside onReady.
+        applyReactiveProps(true, instance, data, appearance, viewport, viewportAnimated);
+        if (disposed || chart !== instance) return;
         ready = true;
         onReady?.(instance);
       })
