@@ -204,3 +204,73 @@ describe("LineChart scalar streaming boundaries", () => {
     expect(frames.size).toBe(0);
   });
 });
+
+describe("LineChart streaming initialization validation", () => {
+  describe.each(["series count", "capacity"] as const)("invalid %s", (field) => {
+    it.each([0, -1, 1.5, NaN, Infinity, -Infinity])(
+      "rejects %s before changing the active stream or discarding queued samples",
+      (value) => {
+        const { chart, postMessage, frames, cancelFrame, flushFrame } = createChart();
+        chart.addVector(1, [10, 100]);
+
+        expect(() => {
+          if (field === "series count") chart.initStreaming(value, 20);
+          else chart.initStreaming(1, value);
+        }).toThrow(new RangeError(`Line streaming ${field} must be a positive integer`));
+        expect(postMessage).not.toHaveBeenCalled();
+        expect(cancelFrame).not.toHaveBeenCalled();
+        expect(frames.size).toBe(1);
+
+        // The old stream's two-series contract and scalar queue remain usable.
+        chart.addVector(2, [20, 200]);
+        flushFrame();
+        expect(postMessage).toHaveBeenCalledOnce();
+        expect(postMessage.mock.calls[0][0]).toEqual({
+          type: "addDataPoints",
+          timestamps: new Float64Array([1, 2]),
+          valuesBySeries: [new Float64Array([10, 20]), new Float64Array([100, 200])],
+        });
+
+        postMessage.mockClear();
+        chart.initStreaming(1, 20);
+        expect(postMessage.mock.calls[0][0]).toEqual({
+          type: "initRingBuffer",
+          maxPoints: 20,
+          seriesCount: 1,
+          // The rejected reset must not consume a dataset generation.
+          dataVersion: 2,
+        });
+      },
+    );
+  });
+
+  it.each([1, 5_000_000, undefined])(
+    "accepts a positive capacity or the default: %s",
+    (capacity) => {
+      const { chart, postMessage } = createChart();
+
+      chart.initStreaming(1, capacity);
+
+      expect(postMessage.mock.calls.map(([message]) => message.type)).toEqual([
+        "initRingBuffer",
+        "start",
+      ]);
+      expect(postMessage.mock.calls[0][0]).toEqual({
+        type: "initRingBuffer",
+        maxPoints: capacity ?? 5_000_000,
+        seriesCount: 1,
+        dataVersion: 2,
+      });
+    },
+  );
+
+  it("keeps initialization a no-op after destruction, even for invalid arguments", () => {
+    const { chart, postMessage, frames } = createChart();
+    chart.destroy();
+    postMessage.mockClear();
+
+    expect(() => chart.initStreaming(NaN, 0)).not.toThrow();
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(frames.size).toBe(0);
+  });
+});

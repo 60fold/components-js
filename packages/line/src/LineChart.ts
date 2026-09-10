@@ -600,6 +600,13 @@ export class LineChart extends BaseChart<LineChartOptions> {
 
   initStreaming(seriesCount: number, maxPoints: number = 5_000_000): void {
     if (this.destroyed) return;
+    // Validate before resetting stream state or discarding queued samples.
+    if (!Number.isInteger(seriesCount) || seriesCount <= 0) {
+      throw new RangeError("Line streaming series count must be a positive integer");
+    }
+    if (!Number.isInteger(maxPoints) || maxPoints <= 0) {
+      throw new RangeError("Line streaming capacity must be a positive integer");
+    }
     this.flushViewportInputs();
     this.discardPendingBatch();
     this.expectedSeriesCount = seriesCount;
