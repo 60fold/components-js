@@ -7,6 +7,8 @@ import type { LineChart, LineDataUpdateOptions } from "@sixtyfold/line";
 
 export type LineData = TimeSeriesData | MultiSeriesData;
 
+export type StatsListener<T> = ((stats: T) => void) | ((stats: T) => void)[] | null;
+
 export function installLineData(
   chart: LineChart,
   data: LineData,

@@ -5,7 +5,6 @@ import {
   mergeProps,
   onMounted,
   onUnmounted,
-  onUpdated,
   shallowRef,
   watch,
   type CSSProperties,
@@ -20,7 +19,7 @@ import {
   type LineDataUpdateOptions,
   type SeriesVisibilityChangeEvent,
 } from "@sixtyfold/line";
-import { hasViewport, installLineData, type LineData } from "./shared.js";
+import { hasViewport, installLineData, type LineData, type StatsListener } from "./shared.js";
 
 /** Vue host for a Sixtyfold line chart. The component is SSR-safe and emits the underlying chart on readiness. */
 export const SixtyfoldLineChart = defineComponent({
@@ -35,11 +34,14 @@ export const SixtyfoldLineChart = defineComponent({
     /** Leave undefined to inherit the chart's configured `animated` default. */
     viewportAnimated: { type: Boolean, default: undefined },
     statsIntervalMs: Number,
+    // Listener presence controls renderer work. Vue skips updates for declared
+    // emit listeners, so stats listeners must be reactive props instead.
+    onStats: [Function, Array] as PropType<StatsListener<LineChartStats>>,
+    onStatsOnce: [Function, Array] as PropType<StatsListener<LineChartStats>>,
   },
   emits: {
     ready: (_chart: LineChart) => true,
     error: (_error: unknown) => true,
-    stats: (_stats: LineChartStats) => true,
     seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true,
   },
   setup(props, { attrs, emit, expose }) {
@@ -57,19 +59,16 @@ export const SixtyfoldLineChart = defineComponent({
 
     expose({ chart });
 
-    // Declared emits are stripped from `attrs`, so the raw vnode props are the
-    // only place a bound `stats` listener is visible. Collecting stats costs
-    // renderer work, so it stays off until something is actually listening.
-    const hasStatsListener = (): boolean => Boolean(vm?.vnode.props?.onStats);
-
     const syncStatsCallback = (): void => {
       const instance = chart.value;
       if (!instance) return;
-      const enabled = hasStatsListener();
+      const enabled = Boolean(props.onStats || props.onStatsOnce);
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
-      instance.setStatsCallback(enabled ? (stats) => emit("stats", stats) : null, {
+      // Native dispatch preserves current listeners, arrays, .once and Vue's
+      // error handling even though stats is declared through listener props.
+      instance.setStatsCallback(enabled ? (stats) => vm?.emit("stats", stats) : null, {
         intervalMs: props.statsIntervalMs,
       });
     };
@@ -133,11 +132,9 @@ export const SixtyfoldLineChart = defineComponent({
       () => applyReactiveProps(),
     );
     watch(
-      () => props.statsIntervalMs,
+      () => [props.onStats, props.onStatsOnce, props.statsIntervalMs] as const,
       () => syncStatsCallback(),
     );
-    // A listener can be bound or removed without any tracked prop changing.
-    onUpdated(() => syncStatsCallback());
 
     onUnmounted(() => {
       disposed = true;
