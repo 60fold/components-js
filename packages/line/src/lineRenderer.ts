@@ -1992,6 +1992,10 @@ export function createLineChartEngine(
 
   function initRingBuffer(maxPoints: number, count: number, nextDataVersion?: number) {
     stopped = false;
+    // Cancel work for the previous dataset before replacing its storage.
+    clearScheduledLODRebuild();
+    lodRebuildDeadline = 0;
+    lodBuildGeneration++;
     retainedPlotFrame = null;
     assignDataVersion(nextDataVersion);
     lodSourceRevision++;
