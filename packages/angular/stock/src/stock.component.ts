@@ -22,7 +22,7 @@ import {
   type StockChartOptions,
   type StockChartStats,
 } from "@sixtyfold/stock";
-import { hasViewport } from "./shared";
+import { createStatsEmitter, hasViewport } from "./shared";
 
 export type CanvasAttributes = Record<string, string | number | boolean | null | undefined>;
 
@@ -87,7 +87,7 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
   @Output() readonly chartReady = new EventEmitter<StockChart>();
   /** Reports construction, renderer, and overlay-image failures. */
   @Output() readonly chartError = new EventEmitter<unknown>();
-  @Output() readonly stats = new EventEmitter<StockChartStats>();
+  @Output() readonly stats = createStatsEmitter<StockChartStats>(() => this.syncStatsCallback());
 
   chart: StockChart | null = null;
   private ready = false;
@@ -124,9 +124,9 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
 
   ngOnChanges(_changes: SimpleChanges): void {
     this.syncCanvasAttributes();
+    this.syncStatsCallback();
     if (!this.ready) return;
     this.applyReactiveInputs();
-    this.syncStatsCallback();
   }
 
   private syncCanvasAttributes(): void {
@@ -185,7 +185,7 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
    *  subscribes to the `stats` output, and is re-sent only when it changes. */
   private syncStatsCallback(): void {
     const chart = this.chart;
-    if (!chart) return;
+    if (!chart || this.destroyed) return;
     const enabled = this.stats.observed;
     if (enabled === this.statsEnabled && this.statsIntervalMs === this.statsInterval) return;
     this.statsEnabled = enabled;

@@ -23,7 +23,7 @@ import {
   type LineDataUpdateOptions,
   type SeriesVisibilityChangeEvent,
 } from "@sixtyfold/line";
-import { hasViewport, installLineData, type LineData } from "./shared";
+import { createStatsEmitter, hasViewport, installLineData, type LineData } from "./shared";
 
 export type CanvasAttributes = Record<string, string | number | boolean | null | undefined>;
 
@@ -89,7 +89,7 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
   @Output() readonly chartReady = new EventEmitter<LineChart>();
   /** Reports construction, renderer, and overlay-image failures. */
   @Output() readonly chartError = new EventEmitter<unknown>();
-  @Output() readonly stats = new EventEmitter<LineChartStats>();
+  @Output() readonly stats = createStatsEmitter<LineChartStats>(() => this.syncStatsCallback());
   @Output() readonly seriesVisibilityChange = new EventEmitter<SeriesVisibilityChangeEvent>();
 
   chart: LineChart | null = null;
@@ -124,9 +124,9 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
 
   ngOnChanges(_changes: SimpleChanges): void {
     this.syncCanvasAttributes();
+    this.syncStatsCallback();
     if (!this.ready) return;
     this.applyReactiveInputs();
-    this.syncStatsCallback();
   }
 
   private syncCanvasAttributes(): void {
@@ -186,7 +186,7 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
    *  subscribes to the `stats` output, and is re-sent only when it changes. */
   private syncStatsCallback(): void {
     const chart = this.chart;
-    if (!chart) return;
+    if (!chart || this.destroyed) return;
     const enabled = this.stats.observed;
     if (enabled === this.statsEnabled && this.statsIntervalMs === this.statsInterval) return;
     this.statsEnabled = enabled;
