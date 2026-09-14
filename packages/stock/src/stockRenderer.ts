@@ -497,6 +497,61 @@ export function createStockChartEngine(
     minRange = configuredMinRange;
   }
 
+  function rebaseStreamingMarketCoordinates(): void {
+    // Capture timestamp anchors before rewriting the coordinates or evicting
+    // any candles. Animation/selection state also lives in market X units.
+    const animation = state.viewportAnimation;
+    const viewports = [state.viewport];
+    if (animation.active) viewports.push(animation.fromViewport, animation.toViewport);
+    const anchors = viewports.map((viewport) => ({
+      viewport,
+      xMin: marketXToTimestamp(viewport.xMin),
+      xMax: marketXToTimestamp(viewport.xMax),
+    }));
+    const wasFollowingRight =
+      Math.abs(state.viewport.xMax - state.dataBounds.xMax) <=
+      Math.max(1, (state.dataBounds.xMax - state.dataBounds.xMin) * 0.001);
+    const selectionStart =
+      state.selectionStart === null ? null : marketXToTimestamp(state.selectionStart);
+    const selectionEnd =
+      state.selectionEnd === null ? null : marketXToTimestamp(state.selectionEnd);
+
+    // Both published levels and in-flight borrowed prefixes use the old X
+    // coordinates. Cancel before the in-place rewrite; rebuild them from raw.
+    cancelLODWork();
+    rebuildMarketCoordinates();
+    state.dataBounds = normalizeBounds(
+      getRawMarketX(0),
+      getRawMarketX(dataLength - 1),
+      state.dataBounds.yMin,
+      state.dataBounds.yMax,
+      minRange,
+    );
+    for (const { viewport, xMin, xMax } of anchors) {
+      const mappedMin = timestampToMarketX(xMin);
+      const mappedMax = timestampToMarketX(xMax);
+      const span = Math.min(
+        state.dataBounds.xMax - state.dataBounds.xMin,
+        Math.max(minRange, mappedMax - mappedMin),
+      );
+      viewport.xMin = Math.max(
+        state.dataBounds.xMin,
+        Math.min(mappedMin, state.dataBounds.xMax - span),
+      );
+      viewport.xMax = viewport.xMin + span;
+    }
+    if (wasFollowingRight) {
+      const span = state.viewport.xMax - state.viewport.xMin;
+      state.viewport.xMax = state.dataBounds.xMax;
+      state.viewport.xMin = state.viewport.xMax - span;
+    }
+    state.selectionStart = selectionStart === null ? null : timestampToMarketX(selectionStart);
+    state.selectionEnd = selectionEnd === null ? null : timestampToMarketX(selectionEnd);
+    state.xGridAlphas.clear();
+    resetToRawLODLevel();
+    lodBuildComplete = false;
+  }
+
   function ensureMarketDayStarts(): void {
     if (!marketDayStartsDirty) return;
     marketDayStarts = collectMarketDayStarts(dataLength, getRawTimestamp);
@@ -778,9 +833,20 @@ export function createStockChartEngine(
     if (!dataTimestamp || !ringBufferMode) return;
 
     const count = timestamps.length;
+    const previousTimestamp = dataLength > 0 ? getRawTimestamp(dataLength - 1) : Number.NaN;
+    const previousRawInterval = rawInterval;
+    // Resolve one cadence for the entire batch, including its join to the
+    // retained tail, so an early gap never uses a provisional larger cap.
+    let intervalTimestamp = previousTimestamp;
+    for (const timestamp of timestamps) {
+      updateRawInterval(intervalTimestamp, timestamp);
+      intervalTimestamp = timestamp;
+    }
+    if (timeScale === "market" && dataLength > 0 && rawInterval !== previousRawInterval) {
+      rebaseStreamingMarketCoordinates();
+    }
     protectLODBuildPrefix(count);
-    let previousTimestamp =
-      dataLength > 0 ? dataTimestamp[rawLogicalToPhysicalIndex(dataLength - 1)] : Number.NaN;
+    let precedingTimestamp = previousTimestamp;
     let previousMarketX =
       timeScale === "market" && dataLength > 0 ? getRawMarketX(dataLength - 1) : 0;
     for (let i = 0; i < count; i++) {
@@ -795,9 +861,8 @@ export function createStockChartEngine(
           }
         : null;
       const timestamp = timestamps[i];
-      updateRawInterval(previousTimestamp, timestamp);
       if (dataMarketX) {
-        const delta = timestamp - previousTimestamp;
+        const delta = timestamp - precedingTimestamp;
         dataMarketX[writeIndex] =
           totalCandlesReceived === 0
             ? 0
@@ -805,7 +870,7 @@ export function createStockChartEngine(
               (Number.isFinite(delta) && delta > 0 ? Math.min(delta, marketGapCap()) : rawInterval);
         previousMarketX = dataMarketX[writeIndex];
       }
-      previousTimestamp = timestamp;
+      precedingTimestamp = timestamp;
       dataTimestamp[writeIndex] = timestamp;
       dataOpen![writeIndex] = opens[i];
       dataHigh![writeIndex] = highs[i];
