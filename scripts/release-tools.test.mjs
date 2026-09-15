@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -28,6 +28,20 @@ test("release versions are exact stable or RC versions", () => {
 test("package directories are validated", () => {
   assert.equal(assertPackageDirectory("stock"), "stock");
   assert.throws(() => assertPackageDirectory("all"));
+});
+
+test("every publishable workspace package is covered by the release gates", async () => {
+  const packagesRoot = path.resolve(import.meta.dirname, "../packages");
+  for (const entry of await readdir(packagesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifest = JSON.parse(
+      await readFile(path.join(packagesRoot, entry.name, "package.json"), "utf8"),
+    );
+    assert.ok(
+      manifest.private === true || PACKAGE_DIRECTORIES.includes(entry.name),
+      `${manifest.name} must be private until it joins the release gates`,
+    );
+  }
 });
 
 test("packed manifests reject workspace and other local dependency protocols", () => {

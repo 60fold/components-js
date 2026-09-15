@@ -145,6 +145,70 @@ describe("stock market-time streaming cadence", () => {
     expect(harness.reportError).not.toHaveBeenCalled();
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 3 * DAY, 3 * DAY + HOUR])(
+    "rejects a malformed streaming timestamp %s before changing market coordinates",
+    (timestamp) => {
+      const harness = createHarness(false);
+      harness.engine.handleMessage("initRingBuffer", { maxCandles: 4 });
+      append(harness.engine, [0, HOUR, 3 * DAY, 3 * DAY + HOUR]);
+      harness.engine.handleMessage("setTimeViewportRange", { xMin: 0, xMax: HOUR });
+      vi.advanceTimersByTime(500);
+      const bounds = { ...harness.state().dataBounds };
+      const viewport = { ...harness.state().viewport };
+      const sync = harness.lastSync();
+
+      expect(() => append(harness.engine, [3 * DAY + HOUR + MINUTE, timestamp])).toThrow();
+
+      expect(harness.state().dataBounds).toEqual(bounds);
+      expect(harness.state().viewport).toEqual(viewport);
+      expect(harness.lastSync()).toBe(sync);
+      vi.advanceTimersByTime(500);
+      expect(harness.reportError).not.toHaveBeenCalled();
+      append(harness.engine, [3 * DAY + HOUR + MINUTE]);
+      expect(harness.lastSync()).toMatchObject({
+        timeDataBounds: { xMin: HOUR, xMax: 3 * DAY + HOUR + MINUTE },
+      });
+      vi.advanceTimersByTime(500);
+      expect(harness.reportError).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["overlap", "NaN", "short column", "invalid empty chunk"])(
+    "rejects a later chunk with %s before installing any part of a renderer batch",
+    (problem) => {
+      const harness = createHarness(false);
+      harness.engine.handleMessage("initRingBuffer", { maxCandles: 10 });
+      append(harness.engine, [0, HOUR, 3 * DAY, 3 * DAY + HOUR]);
+      harness.engine.handleMessage("setTimeViewportRange", { xMin: 0, xMax: HOUR });
+      vi.advanceTimersByTime(500);
+      const bounds = { ...harness.state().dataBounds };
+      const viewport = { ...harness.state().viewport };
+      const first = candles([3 * DAY + HOUR + MINUTE]);
+      const last = candles([3 * DAY + HOUR + 2 * MINUTE]);
+      if (problem === "overlap") last.timestamp[0] = first.timestamp[0];
+      if (problem === "NaN") last.timestamp[0] = Number.NaN;
+      if (problem === "short column") last.volume = new Float64Array(0);
+      if (problem === "invalid empty chunk") last.timestamp = new Float64Array(0);
+
+      expect(() =>
+        harness.engine.handleMessage("addCandleBatches", {
+          batches: [first, last],
+          initialTimeRange: "ALL",
+        }),
+      ).toThrow();
+
+      expect(harness.state().dataBounds).toEqual(bounds);
+      expect(harness.state().viewport).toEqual(viewport);
+      append(harness.engine, [3 * DAY + HOUR + MINUTE]);
+      expect(harness.lastSync()).toMatchObject({
+        timeViewport: { xMin: 0, xMax: HOUR },
+        timeDataBounds: { xMin: 0, xMax: 3 * DAY + HOUR + MINUTE },
+      });
+      vi.advanceTimersByTime(500);
+      expect(harness.reportError).not.toHaveBeenCalled();
+    },
+  );
+
   it("honors the configured minimum range when a historical window becomes narrower", () => {
     const harness = createHarness(true, false, 2 * MINUTE);
     harness.engine.handleMessage("initRingBuffer", { maxCandles: 10 });

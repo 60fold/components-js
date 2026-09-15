@@ -46,27 +46,41 @@ export const SixtyfoldStockChart = defineComponent({
     const chart = shallowRef<StockChart | null>(null);
     const vm = getCurrentInstance();
     let ready = false;
+    let readyNotified = false;
     let disposed = false;
+    let rendererFailed = false;
     let appliedData: OHLCVData | undefined;
     let appliedAppearance: DeepPartial<StockAppearanceOptions> | undefined;
     let appliedViewport: Partial<Viewport> | undefined;
     let statsEnabled: boolean | undefined;
+    let statsOnceConsumed = false;
     let statsInterval: number | undefined;
     let reportedRendererError: unknown;
     expose({ chart });
 
     const syncStatsCallback = (): void => {
       const instance = chart.value;
-      if (!instance) return;
-      const enabled = Boolean(props.onStats || props.onStatsOnce);
+      if (!instance || disposed) return;
+      const enabled = Boolean(props.onStats || (props.onStatsOnce && !statsOnceConsumed));
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
       // Native dispatch preserves current listeners, arrays, .once and Vue's
       // error handling even though stats is declared through listener props.
-      instance.setStatsCallback(enabled ? (stats) => vm?.emit("stats", stats) : null, {
-        intervalMs: props.statsIntervalMs,
-      });
+      instance.setStatsCallback(
+        enabled
+          ? (stats) => {
+              if (disposed) return;
+              if (props.onStatsOnce) statsOnceConsumed = true;
+              try {
+                vm?.emit("stats", stats);
+              } finally {
+                syncStatsCallback();
+              }
+            }
+          : null,
+        { intervalMs: props.statsIntervalMs },
+      );
     };
 
     // Installs every reactive prop in a single engine update. Each dataset
@@ -74,21 +88,30 @@ export const SixtyfoldStockChart = defineComponent({
     // identity tracking also prevents duplicate installs in main-thread mode.
     const applyReactiveProps = (): void => {
       const instance = chart.value;
-      if (!ready || !instance) return;
-      instance.batch(() => {
-        if (props.data && props.data !== appliedData) {
-          instance.setData(props.data);
-          appliedData = props.data;
-        }
-        if (props.appearance && props.appearance !== appliedAppearance) {
-          instance.updateAppearance(props.appearance);
-          appliedAppearance = props.appearance;
-        }
-        if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
-          instance.setViewport(props.viewport, { animated: props.viewportAnimated });
-          appliedViewport = props.viewport;
-        }
-      });
+      if (!ready || !instance || disposed || rendererFailed) return;
+      try {
+        instance.batch(() => {
+          if (props.data && props.data !== appliedData) {
+            instance.setData(props.data);
+            appliedData = props.data;
+          }
+          if (props.appearance && props.appearance !== appliedAppearance) {
+            instance.updateAppearance(props.appearance);
+            appliedAppearance = props.appearance;
+          }
+          if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
+            instance.setViewport(props.viewport, { animated: props.viewportAnimated });
+            appliedViewport = props.viewport;
+          }
+        });
+      } catch (error) {
+        if (!disposed && error !== reportedRendererError) emit("error", error);
+        return;
+      }
+      if (!disposed && !rendererFailed && chart.value === instance && !readyNotified) {
+        readyNotified = true;
+        emit("ready", instance);
+      }
     };
 
     onMounted(() => {
@@ -102,6 +125,7 @@ export const SixtyfoldStockChart = defineComponent({
       }
       chart.value = instance;
       instance.setRendererErrorCallback((error) => {
+        rendererFailed = true;
         reportedRendererError = error;
         if (!disposed) emit("error", error);
       });
@@ -115,7 +139,6 @@ export const SixtyfoldStockChart = defineComponent({
           if (disposed || chart.value !== instance) return;
           ready = true;
           applyReactiveProps();
-          emit("ready", instance);
         })
         .catch((error) => {
           if (!disposed && error !== reportedRendererError) emit("error", error);

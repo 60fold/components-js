@@ -94,6 +94,8 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
 
   chart: LineChart | null = null;
   private ready = false;
+  private readyNotified = false;
+  private rendererFailed = false;
   private destroyed = false;
   private appliedData?: LineData;
   private appliedAppearance?: DeepPartial<LineAppearanceOptions>;
@@ -159,6 +161,7 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
     }
     this.chart = chart;
     chart.setRendererErrorCallback((error) => {
+      this.rendererFailed = true;
       this.reportedRendererError = error;
       if (!this.destroyed) this.chartError.emit(error);
     });
@@ -173,7 +176,6 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
         if (this.destroyed || this.chart !== chart) return;
         this.ready = true;
         this.applyReactiveInputs();
-        this.chartReady.emit(chart);
       })
       .catch((error) => {
         if (!this.destroyed && error !== this.reportedRendererError) {
@@ -201,21 +203,30 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
    *  identity tracking also prevents duplicate installs in main-thread mode. */
   private applyReactiveInputs(): void {
     const chart = this.chart;
-    if (!chart) return;
-    chart.batch(() => {
-      if (this.data && this.data !== this.appliedData) {
-        installLineData(chart, this.data, this.dataUpdateOptions);
-        this.appliedData = this.data;
-      }
-      if (this.appearance && this.appearance !== this.appliedAppearance) {
-        chart.updateAppearance(this.appearance);
-        this.appliedAppearance = this.appearance;
-      }
-      if (hasViewport(this.viewport) && this.viewport !== this.appliedViewport) {
-        chart.setViewport(this.viewport, { animated: this.viewportAnimated });
-        this.appliedViewport = this.viewport;
-      }
-    });
+    if (!chart || !this.ready || this.destroyed || this.rendererFailed) return;
+    try {
+      chart.batch(() => {
+        if (this.data && this.data !== this.appliedData) {
+          installLineData(chart, this.data, this.dataUpdateOptions);
+          this.appliedData = this.data;
+        }
+        if (this.appearance && this.appearance !== this.appliedAppearance) {
+          chart.updateAppearance(this.appearance);
+          this.appliedAppearance = this.appearance;
+        }
+        if (hasViewport(this.viewport) && this.viewport !== this.appliedViewport) {
+          chart.setViewport(this.viewport, { animated: this.viewportAnimated });
+          this.appliedViewport = this.viewport;
+        }
+      });
+    } catch (error) {
+      if (!this.destroyed && error !== this.reportedRendererError) this.chartError.emit(error);
+      return;
+    }
+    if (!this.destroyed && !this.rendererFailed && this.chart === chart && !this.readyNotified) {
+      this.readyNotified = true;
+      this.chartReady.emit(chart);
+    }
   }
 
   ngOnDestroy(): void {

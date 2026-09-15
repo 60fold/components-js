@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "examples/*"
+  - "test/fixtures/react18"
 
 allowBuilds:
   "@parcel/watcher": true

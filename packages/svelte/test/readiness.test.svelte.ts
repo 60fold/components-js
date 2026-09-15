@@ -80,12 +80,101 @@ afterEach(() => {
 });
 
 describe.each(["line", "stock"] as const)("%s.svelte readiness", (kind) => {
+  it.each(["after rejected initial props", "before the initialization reaction"] as const)(
+    "does not publish readiness after a terminal renderer failure %s",
+    async (timing) => {
+      const onReady = vi.fn();
+      const onError = vi.fn();
+      const chart = render(kind, { data: dataFor(kind), onReady, onError });
+      const install = vi.spyOn(chart, "setData");
+      const propError = new Error("invalid initial data");
+      if (timing === "after rejected initial props") {
+        install.mockImplementationOnce(() => {
+          throw propError;
+        });
+        await becomeReady(chart);
+        expect(onError).toHaveBeenCalledExactlyOnceWith(propError);
+      } else {
+        chart.becomeReady();
+      }
+      const failure = new Error("terminal renderer failure");
+      chart.failRuntime(failure);
+      await Promise.resolve();
+      await Promise.resolve();
+      flushSync();
+
+      setProps({ data: dataFor(kind, 100) });
+
+      expect(install).toHaveBeenCalledTimes(timing === "after rejected initial props" ? 1 : 0);
+      expect(chart.callsTo("setData")).toHaveLength(0);
+      expect(onReady).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenLastCalledWith(failure);
+      expect(onError).toHaveBeenCalledTimes(timing === "after rejected initial props" ? 2 : 1);
+    },
+  );
+
+  it("reports a throwing readiness callback without notifying readiness again", async () => {
+    const failure = new Error("readiness callback failed");
+    const onReady = vi.fn(() => {
+      throw failure;
+    });
+    const onError = vi.fn();
+    const chart = render(kind, { data: dataFor(kind), onReady, onError });
+
+    await becomeReady(chart);
+
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    setProps({ appearance: { grid: { visible: false } } });
+    expect(onReady).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(chart.callsTo("updateAppearance")).toHaveLength(1);
+  });
+
+  it("does not reinstall transferred data when a later initial prop fails", async () => {
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    const chart = render(kind, { data: dataFor(kind), appearance: {}, onReady, onError });
+    vi.spyOn(chart, "updateAppearance").mockImplementationOnce(() => {
+      throw new Error("invalid appearance");
+    });
+    await becomeReady(chart);
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    setProps({ appearance: { grid: { color: "#123456" } } });
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+  });
+
+  it("recovers from initial prop errors and notifies readiness only after a successful batch", async () => {
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    const chart = render(kind, { data: dataFor(kind), onReady, onError });
+    const error = new Error("invalid initial data");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw error;
+    });
+    await becomeReady(chart);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(onReady).not.toHaveBeenCalled();
+    expect(chart.destroyed).toBe(false);
+    const replacement = dataFor(kind, 100);
+    setProps({ data: replacement });
+    expect(chart.callsTo("setData").at(-1)?.args[0]).toBe(props.data);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    setProps({ data: dataFor(kind, 200) });
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
   it("installs initial props in one completed batch before calling onReady", async () => {
     let callsAtReady: RecordedCall[] = [];
     let batchesAtReady = 0;
     const onReady = vi.fn((instance: FakeChart) => {
-      // Capture synchronously; an assertion thrown here would be caught by the
-      // adapter's initialization promise and could hide the regression.
+      // Capture synchronously; the adapter reports callback errors through
+      // onError, so asserting inside the callback could hide the regression.
       callsAtReady = appliedCalls(instance);
       batchesAtReady = batch.mock.calls.length;
     });
@@ -177,11 +266,11 @@ describe.each(["line", "stock"] as const)("%s.svelte readiness", (kind) => {
     expect(onReady).toHaveBeenCalledOnce();
   });
 
-  it("reports initial prop installation failure without publishing readiness or retrying", async () => {
+  it("keeps reporting rejected current props without publishing readiness", async () => {
     const onReady = vi.fn();
     const onError = vi.fn();
     const chart = render(kind, { data: dataFor(kind), onReady, onError });
-    const failure = new Error("data installation failed after transfer");
+    const failure = new Error("data installation rejected");
     const install = vi.spyOn(chart, "setData").mockImplementation(() => {
       throw failure;
     });
@@ -189,9 +278,10 @@ describe.each(["line", "stock"] as const)("%s.svelte readiness", (kind) => {
     await becomeReady(chart);
     setProps({ appearance: { grid: { visible: false } } });
 
-    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenLastCalledWith(failure);
     expect(onReady).not.toHaveBeenCalled();
-    expect(install).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledTimes(2);
     expect(chart.callsTo("updateAppearance")).toHaveLength(0);
   });
 

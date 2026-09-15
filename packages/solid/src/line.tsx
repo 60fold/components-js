@@ -34,28 +34,44 @@ export function SixtyfoldLineChart(props: SixtyfoldLineChartProps): JSX.Element 
   let canvas!: HTMLCanvasElement;
   let chart: LineChart | null = null;
   let ready = false;
+  let readyNotified = false;
   let disposed = false;
+  let rendererFailed = false;
   let reportedRendererError: unknown;
   let appliedData: LineData | undefined;
   let appliedAppearance: DeepPartial<LineAppearanceOptions> | undefined;
   let appliedViewport: Partial<Viewport> | undefined;
 
   const apply = (): void => {
-    if (!ready || !chart) return;
-    chart.batch(() => {
-      if (props.data && props.data !== appliedData) {
-        installLineData(chart!, props.data, props.dataUpdateOptions);
-        appliedData = props.data;
+    if (!ready || !chart || disposed || rendererFailed) return;
+    const instance = chart;
+    try {
+      instance.batch(() => {
+        if (props.data && props.data !== appliedData) {
+          installLineData(chart!, props.data, props.dataUpdateOptions);
+          appliedData = props.data;
+        }
+        if (props.appearance && props.appearance !== appliedAppearance) {
+          chart!.updateAppearance(props.appearance);
+          appliedAppearance = props.appearance;
+        }
+        if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
+          chart!.setViewport(props.viewport, { animated: props.viewportAnimated });
+          appliedViewport = props.viewport;
+        }
+      });
+    } catch (error) {
+      if (!disposed && error !== reportedRendererError) props.onError?.(error);
+      return;
+    }
+    if (!disposed && !rendererFailed && chart === instance && !readyNotified) {
+      readyNotified = true;
+      try {
+        props.onReady?.(instance);
+      } catch (error) {
+        if (!disposed) props.onError?.(error);
       }
-      if (props.appearance && props.appearance !== appliedAppearance) {
-        chart!.updateAppearance(props.appearance);
-        appliedAppearance = props.appearance;
-      }
-      if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
-        chart!.setViewport(props.viewport, { animated: props.viewportAnimated });
-        appliedViewport = props.viewport;
-      }
-    });
+    }
   };
 
   createEffect(() => {
@@ -84,6 +100,7 @@ export function SixtyfoldLineChart(props: SixtyfoldLineChartProps): JSX.Element 
     chart = instance;
     props.chartRef?.(instance);
     instance.setRendererErrorCallback((error) => {
+      rendererFailed = true;
       reportedRendererError = error;
       if (!disposed) props.onError?.(error);
     });
@@ -100,7 +117,6 @@ export function SixtyfoldLineChart(props: SixtyfoldLineChartProps): JSX.Element 
         if (disposed || chart !== instance) return;
         ready = true;
         apply();
-        props.onReady?.(instance);
       })
       .catch((error) => {
         if (!disposed && error !== reportedRendererError) props.onError?.(error);

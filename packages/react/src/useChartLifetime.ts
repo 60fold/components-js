@@ -1,12 +1,28 @@
-import { useInsertionEffect, useRef } from "react";
+import * as React from "react";
+import { useEffect, useInsertionEffect, useRef } from "react";
+
+// Activity is a symbol, not a function. Earlier supported React releases do
+// not run insertion cleanups when deleting an already-hidden Suspense tree.
+const canRetainHidden = typeof React.Activity !== "undefined";
 
 interface ChartLifetime<TChart> {
   chart: TChart | null;
   active: boolean;
   ready: boolean;
   readyNotified: boolean;
+  rendererFailed: boolean;
   disposed: boolean;
   pendingErrors: unknown[];
+}
+
+function disposeChart<TChart extends { destroy(): void }>(lifetime: ChartLifetime<TChart>): void {
+  lifetime.disposed = true;
+  lifetime.active = false;
+  lifetime.ready = false;
+  lifetime.pendingErrors.length = 0;
+  const chart = lifetime.chart;
+  lifetime.chart = null;
+  chart?.destroy();
 }
 
 /** Owns a transferred canvas/renderer independently of temporary Effect disconnection. */
@@ -16,6 +32,7 @@ export function useChartLifetime<TChart extends { destroy(): void }>() {
     active: false,
     ready: false,
     readyNotified: false,
+    rendererFailed: false,
     disposed: false,
     pendingErrors: [],
   });
@@ -27,15 +44,21 @@ export function useChartLifetime<TChart extends { destroy(): void }>() {
   // deletes an already-hidden tree. Construction and prop work stay passive;
   // this setup neither reads DOM refs nor schedules React state updates.
   useInsertionEffect(() => {
+    if (!canRetainHidden) return;
     return () => {
-      const lifetime = lifetimeRef.current;
-      lifetime.disposed = true;
-      lifetime.active = false;
-      lifetime.ready = false;
-      lifetime.pendingErrors.length = 0;
-      const chart = lifetime.chart;
-      lifetime.chart = null;
-      chart?.destroy();
+      disposeChart(lifetimeRef.current);
+    };
+  }, []);
+
+  // React 18 and pre-Activity React 19 keep passive Effects connected while
+  // Suspense hides an existing tree, and reliably clean them up on deletion.
+  // Resetting the flag permits Strict Mode's setup/cleanup/setup probe;
+  // deferred construction means that probe has no renderer to dispose.
+  useEffect(() => {
+    if (canRetainHidden) return;
+    lifetimeRef.current.disposed = false;
+    return () => {
+      disposeChart(lifetimeRef.current);
     };
   }, []);
 

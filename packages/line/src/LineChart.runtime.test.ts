@@ -137,7 +137,9 @@ describe("LineChart construction lifecycle", () => {
       resolvedRenderMode: "main",
     });
 
-    const chart = new LineChart(createCanvas());
+    const canvas = createCanvas();
+    const addEventListener = vi.spyOn(canvas, "addEventListener");
+    const chart = new LineChart(canvas, { legend: { interactive: true } });
 
     await expect(chart.initialize()).rejects.toMatchObject({
       name: "ChartRendererError",
@@ -145,6 +147,7 @@ describe("LineChart construction lifecycle", () => {
       message: "synchronous init failure",
     });
     expect(terminate).toHaveBeenCalledOnce();
+    expect(addEventListener.mock.calls.filter(([type]) => type === "click")).toHaveLength(0);
     expect(consoleError).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "ChartRendererError",

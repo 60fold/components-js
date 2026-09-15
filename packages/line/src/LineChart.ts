@@ -465,6 +465,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
   };
 
   private setLegendClickInteraction(enabled: boolean): void {
+    if (this.destroyed) return;
     if (this.legendClickInteractionEnabled === enabled) return;
     this.legendEventsAbortController.abort();
     this.legendEventsAbortController = new AbortController();
@@ -627,10 +628,12 @@ export class LineChart extends BaseChart<LineChartOptions> {
         `addVector: expected ${this.expectedSeriesCount} values, got ${values.length}`,
       );
     }
-    this.flushViewportInputs();
     // Snapshot the scalar sample so callers can reuse values before the batched flush.
+    // Finish potentially throwing caller-owned reads before changing either queue.
+    const snapshot = values.slice();
+    this.flushViewportInputs();
     this.pendingTimestamps.push(timestamp);
-    this.pendingValues.push(values.slice());
+    this.pendingValues.push(snapshot);
 
     // Schedule flush if not already scheduled
     if (this.batchFlushFrame === null) {

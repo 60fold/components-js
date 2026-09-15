@@ -26,10 +26,13 @@ automatically. Construction options are read once; data, appearance, viewport,
 and callback props are reactive. Use a fresh data object for each transferable
 bulk update.
 
-`onReady` runs after renderer initialization and after the current data,
-appearance, and viewport props have been submitted in one batch. Imperative
+`onReady` runs once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. Imperative
 changes made inside the callback are not overwritten by the pending initial
 reactive update. This callback does not wait for the resulting canvas frame.
+A rejected prop installation reports `onError`; supply corrected props to retry
+without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
 
 Prefer `$state.raw` for datasets. `$state` deep-proxies the surrounding object
 graph, which costs more than it buys for bulk data the renderer only reads

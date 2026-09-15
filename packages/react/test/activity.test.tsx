@@ -217,6 +217,33 @@ describe.each(["line", "stock"] as const)("React Activity %s chart lifecycle", (
     expect(chart.callsTo("setViewport")).toHaveLength(2);
   });
 
+  it("recovers a partial initial prop batch without retransferring already-installed data", async () => {
+    const data = createData(kind);
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    const failure = new Error("initial appearance rejected");
+    await render(
+      activity("visible", { data, appearance: { grid: { color: "#111111" } }, onReady, onError }),
+    );
+    const chart = getChart();
+    vi.spyOn(chart, "updateAppearance").mockImplementationOnce(() => {
+      throw failure;
+    });
+    await act(async () => chart.becomeReady());
+    expect(dataBuffer(data).byteLength).toBe(0);
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+
+    await render(
+      activity("visible", { data, appearance: { grid: { color: "#222222" } }, onReady, onError }),
+    );
+
+    expect(chart.receivedData).toHaveLength(1);
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it("defers readiness and installation if initialization completes while hidden", async () => {
     const data = createData(kind);
     const initialOnReady = vi.fn();

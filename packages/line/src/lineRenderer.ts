@@ -1218,17 +1218,12 @@ export function createLineChartEngine(
   let bufferFull = false;
   let totalPointsReceived = 0;
   let previousDataLength = 0;
-  // Advances whenever the logical data sequence changes. A full ring-buffer
-  // append shifts every logical index even when its physical write index wraps
-  // back to the same slot, so writeIndex alone cannot validate an older LOD.
-  let lodSourceRevision = 0;
-
   // LOD data
   interface LODLevel {
     bucketSize: number;
     bucketCount: number;
     sourceDataLength: number;
-    sourceRevision: number;
+    sourceStartIndex: number;
     data: Float64Array;
     internalGapBuckets: Uint8Array;
     // Compact first/min/max/last summaries for each finite run inside an
@@ -1248,7 +1243,7 @@ export function createLineChartEngine(
     bucketSize: number;
     bucketCount: number;
     sourceDataLength: number;
-    sourceRevision: number;
+    sourceStartIndex: number;
     data: Float64Array;
     internalGapBuckets: Uint8Array;
     // Compact x/low/high summaries for finite runs inside gap buckets.
@@ -1294,7 +1289,17 @@ export function createLineChartEngine(
   // LOD building progress
   let lodBuildComplete = false;
   let lodLevelsBuilt = 0;
-  let lodBuildGeneration = 0;
+  interface LODBuild {
+    sourceDataLength: number;
+    sourceStartIndex: number;
+    x: Float64Array;
+    series: Float64Array[];
+    levels: LODLevel[][];
+    rangeLevels: Array<RangeLODLevel[] | null>;
+  }
+  let activeLODBuild: LODBuild | null = null;
+  let lodRebuildRequested = false;
+  let lodBuildTimer: ReturnType<typeof setTimeout> | null = null;
   let lodRebuildTimer: ReturnType<typeof setTimeout> | null = null;
   // Latest performance.now() by which a debounced LOD rebuild must run. Caps the
   // debounce so sustained streaming (which re-arms the timer every append) can't
@@ -1682,7 +1687,7 @@ export function createLineChartEngine(
           bucketSize: 1,
           bucketCount: dataLength,
           sourceDataLength: dataLength,
-          sourceRevision: lodSourceRevision,
+          sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
           data: new Float64Array(0),
           internalGapBuckets: new Uint8Array(0),
           gapData: new Float64Array(0),
@@ -1698,7 +1703,7 @@ export function createLineChartEngine(
                 bucketSize: 1,
                 bucketCount: dataLength,
                 sourceDataLength: dataLength,
-                sourceRevision: lodSourceRevision,
+                sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
                 data: new Float64Array(0),
                 internalGapBuckets: new Uint8Array(0),
                 gapData: new Float64Array(0),
@@ -1731,7 +1736,7 @@ export function createLineChartEngine(
         bucketSize: 1,
         bucketCount: dataLength,
         sourceDataLength: dataLength,
-        sourceRevision: lodSourceRevision,
+        sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
         data: levels[0].data,
         internalGapBuckets: levels[0].internalGapBuckets,
         gapData: levels[0].gapData,
@@ -1750,7 +1755,7 @@ export function createLineChartEngine(
           bucketSize: 1,
           bucketCount: dataLength,
           sourceDataLength: dataLength,
-          sourceRevision: lodSourceRevision,
+          sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
           data: rangeLevels[0].data,
           internalGapBuckets: rangeLevels[0].internalGapBuckets,
           gapData: rangeLevels[0].gapData,
@@ -1768,6 +1773,44 @@ export function createLineChartEngine(
     if (lodRebuildTimer !== null) {
       clearTimeout(lodRebuildTimer);
       lodRebuildTimer = null;
+    }
+  }
+
+  function cancelLODWork(): void {
+    clearScheduledLODRebuild();
+    if (lodBuildTimer !== null) {
+      clearTimeout(lodBuildTimer);
+      lodBuildTimer = null;
+    }
+    lodRebuildDeadline = 0;
+    activeLODBuild = null;
+    lodRebuildRequested = false;
+  }
+
+  function copyLODBuildSource(build: LODBuild, startIndex = 0): void {
+    const copyColumn = (column: Float64Array): Float64Array => {
+      const copy = new Float64Array(build.sourceDataLength);
+      const firstLength = Math.min(build.sourceDataLength, column.length - startIndex);
+      copy.set(column.subarray(startIndex, startIndex + firstLength));
+      if (firstLength < build.sourceDataLength) {
+        copy.set(column.subarray(0, build.sourceDataLength - firstLength), firstLength);
+      }
+      return copy;
+    };
+    build.x = copyColumn(build.x);
+    build.series = build.series.map(copyColumn);
+  }
+
+  function protectLODBuildPrefix(incomingCount: number): void {
+    if (
+      activeLODBuild &&
+      activeLODBuild.x === dataX &&
+      incomingCount > 0 &&
+      (bufferFull || incomingCount > ringBufferMaxPoints - writeIndex)
+    ) {
+      // Filling the final free slot does not evict the borrowed prefix. Copy
+      // before the next write (including an oversized batch) can overwrite it.
+      copyLODBuildSource(activeLODBuild);
     }
   }
 
@@ -1815,9 +1858,7 @@ export function createLineChartEngine(
 
   function stopRenderer(): void {
     stopped = true;
-    clearScheduledLODRebuild();
-    lodRebuildDeadline = 0;
-    lodBuildGeneration++;
+    cancelLODWork();
     ringBufferMode = false;
     streamingBoundsIndex = null;
     state.dataLoadStartTime = 0;
@@ -1879,9 +1920,7 @@ export function createLineChartEngine(
     stopped = false;
     prepareRetainedPlotFrame(preservePreviousFrame);
     assignDataVersion(nextDataVersion);
-    lodSourceRevision++;
-    clearScheduledLODRebuild();
-    lodBuildGeneration++;
+    cancelLODWork();
     ringBufferMode = false;
     streamingBoundsIndex = null;
     writeIndex = 0;
@@ -1987,18 +2026,17 @@ export function createLineChartEngine(
 
     emitViewportSync();
 
+    resetRawLODLevels();
+    lodLevelsBuilt = 1;
     buildLODLevels();
   }
 
   function initRingBuffer(maxPoints: number, count: number, nextDataVersion?: number) {
     stopped = false;
     // Cancel work for the previous dataset before replacing its storage.
-    clearScheduledLODRebuild();
-    lodRebuildDeadline = 0;
-    lodBuildGeneration++;
+    cancelLODWork();
     retainedPlotFrame = null;
     assignDataVersion(nextDataVersion);
-    lodSourceRevision++;
     ringBufferMode = true;
     ringBufferMaxPoints = maxPoints;
     dataLength = 0;
@@ -2046,6 +2084,7 @@ export function createLineChartEngine(
     if (!dataX || !ringBufferMode) return;
 
     const count = timestamps.length;
+    protectLODBuildPrefix(count);
     if (totalPointsReceived === 0 && count > 0 && Number.isFinite(timestamps[0])) {
       presentationGridAnchorX = timestamps[0];
       presentationGridQuantumX = resolvePresentationGridQuantum(
@@ -2073,7 +2112,6 @@ export function createLineChartEngine(
     }
 
     dataLength = bufferFull ? ringBufferMaxPoints : writeIndex;
-    lodSourceRevision++;
     flushDirtyStackedBoundsBlocks();
     streamingBoundsIndex?.flush(dataLength);
     if (dataLength > 0) recalculateBounds();
@@ -2136,25 +2174,52 @@ export function createLineChartEngine(
 
   function buildLODLevels() {
     if (!dataX || stopped) return;
+    if (activeLODBuild) {
+      scheduleLODRebuild();
+      return;
+    }
 
     clearScheduledLODRebuild();
     lodRebuildDeadline = 0;
-    const generation = ++lodBuildGeneration;
+    lodRebuildRequested = false;
     const sourceDataLength = dataLength;
-    const sourceRevision = lodSourceRevision;
     lodBuildComplete = false;
-    lodLevelsBuilt = 1;
     state.rangePreviewValid = false;
     resetCachedYMinMax();
 
-    resetRawLODLevels();
+    // Replacements build privately: keep the last complete hierarchy usable
+    // while incoming samples request the next bounded rebuild.
+    const retainLevels = hasBuiltLOD();
+    const build: LODBuild = {
+      sourceDataLength,
+      sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
+      x: dataX,
+      series: dataSeries,
+      levels: lodLevelsBySeries.map((levels) => [levels[0]]),
+      rangeLevels: rangeLodLevelsBySeries.map((levels) => (levels ? [levels[0]] : null)),
+    };
+    if (ringBufferMode && bufferFull) copyLODBuildSource(build, writeIndex);
+    activeLODBuild = build;
+    if (!retainLevels) {
+      lodLevelsBySeries = build.levels;
+      rangeLodLevelsBySeries = build.rangeLevels;
+      lodLevelsBuilt = 1;
+    }
 
     const coarsestIdx = LOD_BUCKET_SIZES.length - 1;
-    buildLODLevel(coarsestIdx, sourceDataLength, sourceRevision);
+    buildLODLevel(coarsestIdx, sourceDataLength);
     resetCachedYMinMax();
-    lodLevelsBuilt = 2;
+    if (!retainLevels) lodLevelsBuilt = 2;
 
-    buildRemainingLODs(coarsestIdx - 1, generation, sourceDataLength, sourceRevision);
+    buildRemainingLODs(coarsestIdx - 1, build);
+  }
+
+  function getLODXAt(index: number): number {
+    return activeLODBuild!.x[index];
+  }
+
+  function getLODYAt(seriesIndex: number, index: number): number {
+    return activeLODBuild!.series[seriesIndex][index];
   }
 
   function writeRangeLODPoint(
@@ -2163,7 +2228,9 @@ export function createLineChartEngine(
     seriesIndex: number,
     sourceIdx: number,
   ): void {
-    target[baseIdx] = getXAt(sourceIdx);
+    // Range columns are static-only: installing another dataset cancels this
+    // build before their immutable storage can change. Streaming has no bands.
+    target[baseIdx] = getLODXAt(sourceIdx);
     target[baseIdx + 1] = getRangeLowerAt(seriesIndex, sourceIdx);
     target[baseIdx + 2] = getRangeUpperAt(seriesIndex, sourceIdx);
   }
@@ -2197,7 +2264,7 @@ export function createLineChartEngine(
               ? secondExtremeIdx
               : lastIdx;
       if (sourceIdx === previousIdx) continue;
-      target.push(getXAt(sourceIdx), getYAt(seriesIndex, sourceIdx));
+      target.push(getLODXAt(sourceIdx), getLODYAt(seriesIndex, sourceIdx));
       sourceIndices.push(sourceIdx);
       previousIdx = sourceIdx;
     }
@@ -2298,7 +2365,7 @@ export function createLineChartEngine(
     let maxY = NaN;
 
     for (let i = start; i < end; i++) {
-      const value = getYAt(seriesIndex, i);
+      const value = getLODYAt(seriesIndex, i);
       if (Number.isFinite(value)) {
         if (firstIdx === -1) {
           firstIdx = i;
@@ -2411,12 +2478,12 @@ export function createLineChartEngine(
     let minY = NaN;
     let maxY = NaN;
 
-    if (!Number.isFinite(getYAt(seriesIndex, start))) {
+    if (!Number.isFinite(getLODYAt(seriesIndex, start))) {
       appendLineGapBreak(target, sourceIndices);
     }
 
     for (let i = start; i < end; i++) {
-      const value = getYAt(seriesIndex, i);
+      const value = getLODYAt(seriesIndex, i);
       if (Number.isFinite(value)) {
         if (firstIdx === -1) {
           firstIdx = i;
@@ -2516,7 +2583,7 @@ export function createLineChartEngine(
               : lastIdx;
       if (sourceIdx === previousIdx) continue;
       target.push(
-        getXAt(sourceIdx),
+        getLODXAt(sourceIdx),
         getRangeLowerAt(seriesIndex, sourceIdx),
         getRangeUpperAt(seriesIndex, sourceIdx),
       );
@@ -2759,7 +2826,6 @@ export function createLineChartEngine(
     bucketSize: number,
     bucketCount: number,
     sourceDataLength: number,
-    sourceRevision: number,
   ): RangeLODLevel {
     // 12 floats per bucket: first(x,low,high), two extrema points ordered by x,
     // last(x,low,high).
@@ -2871,7 +2937,7 @@ export function createLineChartEngine(
       bucketSize,
       bucketCount,
       sourceDataLength,
-      sourceRevision,
+      sourceStartIndex: activeLODBuild!.sourceStartIndex,
       data: lodData,
       internalGapBuckets,
       gapData: new Float64Array(gapValues),
@@ -2881,9 +2947,7 @@ export function createLineChartEngine(
     };
   }
 
-  function buildLODLevel(levelIdx: number, sourceDataLength: number, sourceRevision: number) {
-    if (!dataX) return;
-
+  function buildLODLevel(levelIdx: number, sourceDataLength: number) {
     const bucketSize = LOD_BUCKET_SIZES[levelIdx];
     if (bucketSize >= sourceDataLength) return;
 
@@ -2913,7 +2977,7 @@ export function createLineChartEngine(
         let validCount = 0;
 
         for (let i = start; i < end; i++) {
-          const val = getYAt(s, i);
+          const val = getLODYAt(s, i);
           if (!Number.isFinite(val)) continue;
 
           validCount++;
@@ -2951,20 +3015,20 @@ export function createLineChartEngine(
             lodData[baseIdx] = NaN;
             lodData[baseIdx + 1] = NaN;
           } else {
-            lodData[baseIdx] = getXAt(firstIdx);
-            lodData[baseIdx + 1] = getYAt(s, firstIdx);
+            lodData[baseIdx] = getLODXAt(firstIdx);
+            lodData[baseIdx + 1] = getLODYAt(s, firstIdx);
           }
 
           // Min/Max in temporal order
           if (minIdx <= maxIdx) {
-            lodData[baseIdx + 2] = getXAt(minIdx);
+            lodData[baseIdx + 2] = getLODXAt(minIdx);
             lodData[baseIdx + 3] = minY;
-            lodData[baseIdx + 4] = getXAt(maxIdx);
+            lodData[baseIdx + 4] = getLODXAt(maxIdx);
             lodData[baseIdx + 5] = maxY;
           } else {
-            lodData[baseIdx + 2] = getXAt(maxIdx);
+            lodData[baseIdx + 2] = getLODXAt(maxIdx);
             lodData[baseIdx + 3] = maxY;
-            lodData[baseIdx + 4] = getXAt(minIdx);
+            lodData[baseIdx + 4] = getLODXAt(minIdx);
             lodData[baseIdx + 5] = minY;
           }
 
@@ -2973,8 +3037,8 @@ export function createLineChartEngine(
             lodData[baseIdx + 6] = NaN;
             lodData[baseIdx + 7] = NaN;
           } else {
-            lodData[baseIdx + 6] = getXAt(lastIdx);
-            lodData[baseIdx + 7] = getYAt(s, lastIdx);
+            lodData[baseIdx + 6] = getLODXAt(lastIdx);
+            lodData[baseIdx + 7] = getLODYAt(s, lastIdx);
           }
 
           let gapPointCount = 0;
@@ -3013,12 +3077,12 @@ export function createLineChartEngine(
         }
       }
 
-      const insertIdx = lodLevelsBySeries[s].findIndex((l) => l.bucketSize > bucketSize);
+      const insertIdx = activeLODBuild!.levels[s].findIndex((l) => l.bucketSize > bucketSize);
       const lodLevel: LODLevel = {
         bucketSize,
         bucketCount,
         sourceDataLength,
-        sourceRevision,
+        sourceStartIndex: activeLODBuild!.sourceStartIndex,
         data: lodData,
         internalGapBuckets,
         gapData: new Float64Array(gapValues),
@@ -3027,19 +3091,18 @@ export function createLineChartEngine(
         renderOffsets,
       };
       if (insertIdx === -1) {
-        lodLevelsBySeries[s].push(lodLevel);
+        activeLODBuild!.levels[s].push(lodLevel);
       } else {
-        lodLevelsBySeries[s].splice(insertIdx, 0, lodLevel);
+        activeLODBuild!.levels[s].splice(insertIdx, 0, lodLevel);
       }
 
-      const rangeLevels = rangeLodLevelsBySeries[s];
+      const rangeLevels = activeLODBuild!.rangeLevels[s];
       if (rangeLevels) {
         const rangeLODLevel = buildRangeLODLevelForSeries(
           s,
           bucketSize,
           bucketCount,
           sourceDataLength,
-          sourceRevision,
         );
         const rangeInsertIdx = rangeLevels.findIndex((l) => l.bucketSize > bucketSize);
         if (rangeInsertIdx === -1) {
@@ -3051,44 +3114,42 @@ export function createLineChartEngine(
     }
   }
 
-  function buildRemainingLODs(
-    startIdx: number,
-    generation: number,
-    sourceDataLength: number,
-    sourceRevision: number,
-  ) {
-    if (stopped || generation !== lodBuildGeneration) return;
+  function buildRemainingLODs(startIdx: number, build: LODBuild) {
+    if (stopped || activeLODBuild !== build) return;
 
     if (startIdx < 1) {
-      lodBuildComplete = sourceRevision === lodSourceRevision;
+      lodLevelsBySeries = build.levels;
+      rangeLodLevelsBySeries = build.rangeLevels;
+      updateRawLODLevelLengths();
+      activeLODBuild = null;
+      lodLevelsBuilt = LOD_BUCKET_SIZES.length;
+      lodBuildComplete = true;
+      stats.nextEmitAt = 0;
       state.cacheValid = false; // Force re-render with all LODs available
       state.rangePreviewValid = false; // Re-render preview with final LOD levels
       resetCachedYMinMax();
       scheduleRender();
+      if (lodRebuildRequested) scheduleLODRebuild();
       return;
     }
 
     if (ssr) {
       for (let idx = startIdx; idx >= 1; idx--) {
-        if (stopped || generation !== lodBuildGeneration) return;
-        buildLODLevel(idx, sourceDataLength, sourceRevision);
+        buildLODLevel(idx, build.sourceDataLength);
         resetCachedYMinMax();
-        lodLevelsBuilt++;
+        if (lodLevelsBySeries === build.levels) lodLevelsBuilt++;
       }
-      lodBuildComplete = sourceRevision === lodSourceRevision;
-      state.cacheValid = false;
-      state.rangePreviewValid = false;
-      resetCachedYMinMax();
-      scheduleRender();
+      buildRemainingLODs(0, build);
       return;
     }
 
-    rendererScheduler.scheduleTask(() => {
-      if (stopped || generation !== lodBuildGeneration) return;
-      buildLODLevel(startIdx, sourceDataLength, sourceRevision);
+    lodBuildTimer = rendererScheduler.scheduleTask(() => {
+      if (stopped || activeLODBuild !== build) return;
+      lodBuildTimer = null;
+      buildLODLevel(startIdx, build.sourceDataLength);
       resetCachedYMinMax();
-      lodLevelsBuilt++;
-      buildRemainingLODs(startIdx - 1, generation, sourceDataLength, sourceRevision);
+      if (lodLevelsBySeries === build.levels) lodLevelsBuilt++;
+      buildRemainingLODs(startIdx - 1, build);
     }, 10);
   }
 
@@ -3098,16 +3159,12 @@ export function createLineChartEngine(
       buildLODLevels();
       return;
     }
-    lodBuildComplete = false;
-    // A growing, not-yet-full ring has an immutable logical prefix. Let a
-    // staged build finish that snapshot while new tail samples arrive; its
-    // revision metadata keeps the tail raw and the next bounded rebuild catches
-    // up. Once eviction starts, logical indices shift and the in-flight snapshot
-    // must be cancelled immediately.
-    if (!ringBufferMode || bufferFull) lodBuildGeneration++;
-
+    lodRebuildRequested = true;
     const now = performance.now();
     if (lodRebuildDeadline === 0) lodRebuildDeadline = now + LOD_REBUILD_MAX_WAIT_MS;
+    // Appends dirty the next build without canceling the immutable source that
+    // is already progressing. Keep its original deadline until publication.
+    if (activeLODBuild) return;
     // Honor the debounce, but never wait past the deadline.
     const wait = Math.max(0, Math.min(delayMs, lodRebuildDeadline - now));
 
@@ -3257,6 +3314,8 @@ export function createLineChartEngine(
     startBucket: number;
     endBucket: number;
     length: number;
+    rawHead?: RawRenderSeriesData;
+    rawTail?: RawRenderSeriesData;
   }
 
   interface ColumnRenderSeriesData {
@@ -3391,7 +3450,7 @@ export function createLineChartEngine(
   }
 
   function isLODSourceCurrentForBucket(
-    level: Pick<LODLevel, "bucketSize" | "sourceDataLength" | "sourceRevision">,
+    level: Pick<LODLevel, "bucketSize" | "sourceDataLength" | "sourceStartIndex">,
     bucket: number,
   ): boolean {
     // A summary may replace raw points only when the complete source bucket was
@@ -3399,23 +3458,34 @@ export function createLineChartEngine(
     // partial tail raw until it reaches the next bucket boundary.
     if ((bucket + 1) * level.bucketSize > level.sourceDataLength) return false;
 
-    // Before a ring fills, existing logical indices never move and summaries for
-    // its immutable prefix remain valid. Once it fills, every append shifts the
-    // logical origin, so only a hierarchy built from the current revision is
-    // safe to query.
-    return !ringBufferMode || !bufferFull || level.sourceRevision === lodSourceRevision;
+    // Snapshot indices stay anchored even after the live ring advances. Only
+    // complete buckets still retained by the ring can replace current samples.
+    return Number.isInteger(bucket) && bucket * level.bucketSize >= getLODSourceOffset(level);
   }
 
-  function isLODSourceCurrentForRange(
-    level: Pick<LODLevel, "sourceDataLength" | "sourceRevision">,
+  function getLODSourceOffset(level: Pick<LODLevel, "sourceStartIndex">): number {
+    return ringBufferMode ? totalPointsReceived - dataLength - level.sourceStartIndex : 0;
+  }
+
+  function hasLODSourceForRange(
+    level: Pick<LODLevel, "bucketSize" | "sourceDataLength" | "sourceStartIndex">,
+    startIdx: number,
     endIdx: number,
   ): boolean {
-    if (endIdx >= level.sourceDataLength) return false;
-    return !ringBufferMode || !bufferFull || level.sourceRevision === lodSourceRevision;
+    const offset = getLODSourceOffset(level);
+    const firstBucket = Math.max(
+      Math.floor((startIdx + offset) / level.bucketSize),
+      Math.ceil(offset / level.bucketSize),
+    );
+    const lastBucket = Math.min(
+      Math.floor((endIdx + offset) / level.bucketSize),
+      Math.floor(level.sourceDataLength / level.bucketSize) - 1,
+    );
+    return firstBucket <= lastBucket;
   }
 
   function largestContainedLODIndex(
-    levels: Array<{ bucketSize: number }>,
+    levels: Array<{ bucketSize: number; sourceStartIndex: number }>,
     cursor: number,
     remaining: number,
   ): number {
@@ -3425,7 +3495,12 @@ export function createLineChartEngine(
     // whole aligned source bucket.
     for (let index = levels.length - 1; index >= 1; index--) {
       const bucketSize = levels[index].bucketSize;
-      if (bucketSize <= remaining && cursor % bucketSize === 0) return index;
+      if (
+        bucketSize <= remaining &&
+        (cursor + getLODSourceOffset(levels[index])) % bucketSize === 0
+      ) {
+        return index;
+      }
     }
     return 0;
   }
@@ -3724,7 +3799,7 @@ export function createLineChartEngine(
         lastPresentationQueryVisits++;
         const level = levels[levelIndex];
         const bucketSize = level.bucketSize;
-        const bucket = cursor / bucketSize;
+        const bucket = (cursor + getLODSourceOffset(level)) / bucketSize;
         const bucketKind = classifyPresentationLODBucket(level, bucket);
         if (bucketKind === PRESENTATION_BUCKET_INVALID) continue;
         selectedLevel = level;
@@ -3755,8 +3830,8 @@ export function createLineChartEngine(
           const startPoint = selectedLevel.gapOffsets[selectedBucket];
           const endPoint = selectedLevel.gapOffsets[selectedBucket + 1];
           for (let point = startPoint; point < endPoint; point++) {
-            const sourceIndex = selectedLevel.gapSourceIndices[point];
-            if (sourceIndex === GAP_BREAK_SOURCE_INDEX) {
+            const snapshotIndex = selectedLevel.gapSourceIndices[point];
+            if (snapshotIndex === GAP_BREAK_SOURCE_INDEX) {
               hasGap = true;
               const currentBase = presentationRunBase(PRESENTATION_CURRENT_RUN_SLOT);
               if (scratch[currentBase + PRESENTATION_RUN_ID] >= 0) {
@@ -3765,6 +3840,7 @@ export function createLineChartEngine(
               }
               continue;
             }
+            const sourceIndex = snapshotIndex - getLODSourceOffset(selectedLevel);
             if (sourceIndex < bucketStart || sourceIndex > bucketEnd) return -1;
             const pointBase = point * 2;
             const x = selectedLevel.gapData[pointBase];
@@ -4192,7 +4268,7 @@ export function createLineChartEngine(
         lastPresentationQueryVisits++;
         const level = levels[levelIndex];
         const bucketSize = level.bucketSize;
-        const bucket = cursor / bucketSize;
+        const bucket = (cursor + getLODSourceOffset(level)) / bucketSize;
         const bucketKind = classifyPresentationRangeLODBucket(level, bucket);
         if (bucketKind === PRESENTATION_BUCKET_INVALID) continue;
         selectedLevel = level;
@@ -4224,8 +4300,8 @@ export function createLineChartEngine(
           const startPoint = selectedLevel.gapOffsets[selectedBucket];
           const endPoint = selectedLevel.gapOffsets[selectedBucket + 1];
           for (let point = startPoint; point < endPoint; point++) {
-            const sourceIndex = selectedLevel.gapSourceIndices[point];
-            if (sourceIndex === GAP_BREAK_SOURCE_INDEX) {
+            const snapshotIndex = selectedLevel.gapSourceIndices[point];
+            if (snapshotIndex === GAP_BREAK_SOURCE_INDEX) {
               hasGap = true;
               const currentBase = rangePresentationRunBase(PRESENTATION_CURRENT_RUN_SLOT);
               if (scratch[currentBase + RANGE_RUN_ID] >= 0) {
@@ -4234,6 +4310,7 @@ export function createLineChartEngine(
               }
               continue;
             }
+            const sourceIndex = snapshotIndex - getLODSourceOffset(selectedLevel);
             if (sourceIndex < bucketStart || sourceIndex > bucketEnd) return -1;
             const pointBase = point * 3;
             const x = selectedLevel.gapData[pointBase];
@@ -4677,6 +4754,7 @@ export function createLineChartEngine(
     }
 
     if (data.mode === "lod") {
+      if (data.rawHead) forEachRenderPoint(data.rawHead, visit);
       for (let b = data.startBucket; b <= data.endBucket; b++) {
         if (data.internalGapBuckets[b] === COLLAPSED_GAP_BUCKET) {
           visit(NaN, NaN, -1);
@@ -4705,6 +4783,7 @@ export function createLineChartEngine(
           visit(data.lodData[pointBase], data.lodData[pointBase + 1], -1);
         }
       }
+      if (data.rawTail) forEachRenderPoint(data.rawTail, visit);
       return;
     }
 
@@ -4795,7 +4874,18 @@ export function createLineChartEngine(
       const lodLevels = lodLevelsBySeries[s];
       const lod = lodLevels[lodIndex];
 
-      if (lodIndex === 0) {
+      const sourceOffset = getLODSourceOffset(lod);
+      const startBucket = Math.max(
+        Math.floor((startIdx + sourceOffset) / lod.bucketSize),
+        Math.ceil(sourceOffset / lod.bucketSize),
+      );
+      const endBucket = Math.min(
+        Math.ceil((endIdx + sourceOffset) / lod.bucketSize),
+        ringBufferMode
+          ? Math.floor(lod.sourceDataLength / lod.bucketSize) - 1
+          : lod.bucketCount - 1,
+      );
+      if (lodIndex === 0 || startBucket > endBucket) {
         results.push({
           mode: "raw",
           seriesIndex: s,
@@ -4804,8 +4894,28 @@ export function createLineChartEngine(
           length: visibleLength,
         });
       } else {
-        const startBucket = Math.floor(startIdx / lod.bucketSize);
-        const endBucket = Math.min(Math.ceil(endIdx / lod.bucketSize), lod.bucketCount - 1);
+        const headEnd = Math.min(endIdx, startBucket * lod.bucketSize - sourceOffset - 1);
+        const tailStart = Math.max(startIdx, (endBucket + 1) * lod.bucketSize - sourceOffset);
+        const rawHead: RawRenderSeriesData | undefined =
+          startIdx <= headEnd
+            ? {
+                mode: "raw",
+                seriesIndex: s,
+                startIdx,
+                endIdx: headEnd,
+                length: headEnd - startIdx + 1,
+              }
+            : undefined;
+        const rawTail: RawRenderSeriesData | undefined =
+          tailStart <= endIdx
+            ? {
+                mode: "raw",
+                seriesIndex: s,
+                startIdx: tailStart,
+                endIdx,
+                length: endIdx - tailStart + 1,
+              }
+            : undefined;
 
         results.push({
           mode: "lod",
@@ -4815,7 +4925,13 @@ export function createLineChartEngine(
           gapOffsets: lod.gapOffsets,
           startBucket,
           endBucket,
-          length: lod.renderOffsets[endBucket + 1] - lod.renderOffsets[startBucket],
+          length:
+            lod.renderOffsets[endBucket + 1] -
+            lod.renderOffsets[startBucket] +
+            (rawHead?.length ?? 0) +
+            (rawTail?.length ?? 0),
+          rawHead,
+          rawTail,
         });
       }
     }
@@ -5012,11 +5128,13 @@ export function createLineChartEngine(
       const rangeLevels = rangeLodLevelsBySeries[s];
       if (rangeLevels) {
         let rangeLod: RangeLODLevel | null = null;
+        let firstRawEnd = endIdx;
+        let lastRawStart = endIdx + 1;
         if (length > lodThreshold && rangeLevels.length > 1) {
           for (let i = rangeLevels.length - 1; i >= 1; i--) {
             const candidate = rangeLevels[i];
             const bucketCount = Math.ceil(length / candidate.bucketSize);
-            if (bucketCount >= 100 && isLODSourceCurrentForRange(candidate, endIdx)) {
+            if (bucketCount >= 100 && hasLODSourceForRange(candidate, startIdx, endIdx)) {
               rangeLod = candidate;
               break;
             }
@@ -5024,11 +5142,17 @@ export function createLineChartEngine(
         }
 
         if (rangeLod) {
-          const startBucket = Math.floor(startIdx / rangeLod.bucketSize);
-          const endBucket = Math.min(
-            Math.floor(endIdx / rangeLod.bucketSize),
-            rangeLod.bucketCount - 1,
+          const sourceOffset = getLODSourceOffset(rangeLod);
+          const startBucket = Math.max(
+            Math.floor((startIdx + sourceOffset) / rangeLod.bucketSize),
+            Math.ceil(sourceOffset / rangeLod.bucketSize),
           );
+          const endBucket = Math.min(
+            Math.floor((endIdx + sourceOffset) / rangeLod.bucketSize),
+            Math.floor(rangeLod.sourceDataLength / rangeLod.bucketSize) - 1,
+          );
+          firstRawEnd = startBucket * rangeLod.bucketSize - sourceOffset - 1;
+          lastRawStart = (endBucket + 1) * rangeLod.bucketSize - sourceOffset;
 
           for (let b = startBucket; b <= endBucket; b++) {
             const baseIdx = b * 12;
@@ -5046,18 +5170,19 @@ export function createLineChartEngine(
               }
             }
           }
-        } else {
-          for (let i = startIdx; i <= endIdx; i++) {
-            const low = getRangeLowerAt(s, i);
-            const high = getRangeUpperAt(s, i);
-            if (Number.isFinite(low)) {
-              if (low < globalMin) globalMin = low;
-              if (low > globalMax) globalMax = low;
-            }
-            if (Number.isFinite(high)) {
-              if (high < globalMin) globalMin = high;
-              if (high > globalMax) globalMax = high;
-            }
+        }
+        for (let i = startIdx; i <= endIdx; i++) {
+          if (i > firstRawEnd && i < lastRawStart) i = lastRawStart;
+          if (i > endIdx) break;
+          const low = getRangeLowerAt(s, i);
+          const high = getRangeUpperAt(s, i);
+          if (Number.isFinite(low)) {
+            if (low < globalMin) globalMin = low;
+            if (low > globalMax) globalMax = low;
+          }
+          if (Number.isFinite(high)) {
+            if (high < globalMin) globalMin = high;
+            if (high > globalMax) globalMax = high;
           }
         }
       }
@@ -5065,11 +5190,13 @@ export function createLineChartEngine(
       const lodLevels = lodLevelsBySeries[s];
 
       let lod: LODLevel | null = null;
+      let firstRawEnd = endIdx;
+      let lastRawStart = endIdx + 1;
       if (length > lodThreshold && lodLevels.length > 1) {
         for (let i = lodLevels.length - 1; i >= 1; i--) {
           const candidate = lodLevels[i];
           const bucketCount = Math.ceil(length / candidate.bucketSize);
-          if (bucketCount >= 100 && isLODSourceCurrentForRange(candidate, endIdx)) {
+          if (bucketCount >= 100 && hasLODSourceForRange(candidate, startIdx, endIdx)) {
             lod = candidate;
             break;
           }
@@ -5077,8 +5204,17 @@ export function createLineChartEngine(
       }
 
       if (lod) {
-        const startBucket = Math.floor(startIdx / lod.bucketSize);
-        const endBucket = Math.min(Math.floor(endIdx / lod.bucketSize), lod.bucketCount - 1);
+        const sourceOffset = getLODSourceOffset(lod);
+        const startBucket = Math.max(
+          Math.floor((startIdx + sourceOffset) / lod.bucketSize),
+          Math.ceil(sourceOffset / lod.bucketSize),
+        );
+        const endBucket = Math.min(
+          Math.floor((endIdx + sourceOffset) / lod.bucketSize),
+          Math.floor(lod.sourceDataLength / lod.bucketSize) - 1,
+        );
+        firstRawEnd = startBucket * lod.bucketSize - sourceOffset - 1;
+        lastRawStart = (endBucket + 1) * lod.bucketSize - sourceOffset;
 
         for (let b = startBucket; b <= endBucket; b++) {
           const baseIdx = b * 8;
@@ -5094,13 +5230,14 @@ export function createLineChartEngine(
             if (y2 > globalMax) globalMax = y2;
           }
         }
-      } else {
-        for (let i = startIdx; i <= endIdx; i++) {
-          const y = getYAt(s, i);
-          if (Number.isFinite(y)) {
-            if (y < globalMin) globalMin = y;
-            if (y > globalMax) globalMax = y;
-          }
+      }
+      for (let i = startIdx; i <= endIdx; i++) {
+        if (i > firstRawEnd && i < lastRawStart) i = lastRawStart;
+        if (i > endIdx) break;
+        const y = getYAt(s, i);
+        if (Number.isFinite(y)) {
+          if (y < globalMin) globalMin = y;
+          if (y > globalMax) globalMax = y;
         }
       }
     }
@@ -5575,6 +5712,16 @@ export function createLineChartEngine(
         }
       }
       return false;
+    }
+
+    for (const fringe of [data.rawHead, data.rawTail]) {
+      if (!fringe) continue;
+      for (let index = fringe.startIdx; index <= fringe.endIdx; index++) {
+        if (Number.isFinite(getYAt(fringe.seriesIndex, index))) {
+          finitePoints++;
+          if (finitePoints >= minimum) return true;
+        }
+      }
     }
 
     for (let bucket = data.startBucket; bucket <= data.endBucket; bucket++) {

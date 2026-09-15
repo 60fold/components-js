@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaseChart } from "@sixtyfold/core/chart/BaseChart";
-import { StockChart, type StockChartOptions } from "./StockChart";
+import { StockChart, type StockCandleBatch, type StockChartOptions } from "./StockChart";
 import type { ChartWorkerLike } from "@sixtyfold/core/chart/workerInterface";
 import { markViewportInputBatchRenderer } from "../../core/src/chart/internalRendererCapabilities";
 
@@ -97,12 +97,29 @@ function installAnimationFrameHarness(): {
   };
 }
 
-function packedColumns(): Float64Array[] {
+function packedColumns(startTimestamp = 0): Float64Array[] {
   const buffer = new ArrayBuffer(6 * 2 * Float64Array.BYTES_PER_ELEMENT);
-  return Array.from(
+  const columns = Array.from(
     { length: 6 },
     (_, index) => new Float64Array(buffer, index * 2 * Float64Array.BYTES_PER_ELEMENT, 2),
   );
+  columns[0].set([startTimestamp, startTimestamp + 1]);
+  return columns;
+}
+
+function candleBatch(timestamps: readonly number[]) {
+  return {
+    timestamp: Float64Array.from(timestamps),
+    open: Float64Array.from(timestamps, () => 10),
+    high: Float64Array.from(timestamps, () => 12),
+    low: Float64Array.from(timestamps, () => 9),
+    close: Float64Array.from(timestamps, () => 11),
+    volume: Float64Array.from(timestamps, () => 100),
+  };
+}
+
+function appendBatch(chart: StockChart, batch: StockCandleBatch): void {
+  chart.addCandles(batch.timestamp, batch.open, batch.high, batch.low, batch.close, batch.volume);
 }
 
 afterEach(() => {
@@ -179,7 +196,7 @@ describe("StockChart transfer lists", () => {
   it("transfers multiple initial candle batches in one renderer message", () => {
     const { chart, messages } = createChart();
     const first = packedColumns();
-    const second = packedColumns();
+    const second = packedColumns(2);
 
     chart.addCandleBatches(
       [
@@ -313,7 +330,7 @@ describe("StockChart scalar candle batching", () => {
       chart.addCandle(1, 10, 12, 9, 11, 100);
       const staleCallback = frames.nextCallback();
       if (boundary === "bulk flush") {
-        const [timestamps, opens, highs, lows, closes, volumes] = packedColumns();
+        const [timestamps, opens, highs, lows, closes, volumes] = packedColumns(2);
         chart.addCandles(timestamps, opens, highs, lows, closes, volumes);
       } else if (boundary === "initStreaming") {
         chart.initStreaming(10);
@@ -329,13 +346,13 @@ describe("StockChart scalar candle batching", () => {
         ]);
       }
       messages.length = 0;
-      chart.addCandle(3, 30, 32, 29, 31, 300);
+      chart.addCandle(4, 30, 32, 29, 31, 300);
       staleCallback(performance.now());
       expect(messages).toEqual([]);
       expect(frames.pending()).toBe(1);
       frames.flush();
       expect(messages).toHaveLength(1);
-      expect(Array.from(messages[0].message.timestamps)).toEqual([3]);
+      expect(Array.from(messages[0].message.timestamps)).toEqual([4]);
       chart.destroy();
     },
   );
@@ -404,6 +421,165 @@ describe("StockChart scalar candle batching", () => {
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(cancelAnimationFrame).not.toHaveBeenCalled();
     expect(frames.pending()).toBe(0);
+    chart.destroy();
+  });
+});
+
+describe("StockChart streaming validation", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1, 0])(
+    "rejects scalar timestamp %s without changing pending candles",
+    (timestamp) => {
+      const frames = installAnimationFrameHarness();
+      const { chart, messages } = createChart({ timeScale: "market" });
+      chart.addCandle(1, 10, 12, 9, 11, 100);
+
+      expect(() => chart.addCandle(timestamp, 20, 22, 19, 21, 200)).toThrow(
+        Number.isFinite(timestamp) ? "strictly increasing" : "finite values",
+      );
+
+      expect(messages).toEqual([]);
+      expect(frames.pending()).toBe(1);
+      chart.addCandle(2, 30, 32, 29, 31, 300);
+      frames.flush();
+      expect(Array.from(messages[0].message.timestamps)).toEqual([1, 2]);
+      expect(Array.from(messages[0].message.opens)).toEqual([10, 30]);
+      chart.destroy();
+    },
+  );
+
+  it.each([
+    [1, 2],
+    [0, 2],
+    [2, 2],
+    [3, 2],
+    [2, Number.NaN],
+    [2, Number.POSITIVE_INFINITY],
+    [Number.NEGATIVE_INFINITY, 2],
+  ])("rejects bulk timestamps %j before flushing queued candles", (...timestamps) => {
+    const frames = installAnimationFrameHarness();
+    const { chart, messages } = createChart({ timeScale: "market" });
+    chart.addCandle(1, 10, 12, 9, 11, 100);
+    const batch = candleBatch(timestamps);
+
+    expect(() => appendBatch(chart, batch)).toThrow(/strictly increasing|finite values/);
+
+    expect(messages).toEqual([]);
+    expect(frames.pending()).toBe(1);
+    expect(batch.timestamp.byteLength).toBe(timestamps.length * Float64Array.BYTES_PER_ELEMENT);
+    chart.addCandle(2, 20, 22, 19, 21, 200);
+    frames.flush();
+    expect(Array.from(messages[0].message.timestamps)).toEqual([1, 2]);
+    chart.destroy();
+  });
+
+  it.each(["open", "high", "low", "close", "volume"] as const)(
+    "rejects a short %s column before flushing or transferring any candles",
+    (column) => {
+      const frames = installAnimationFrameHarness();
+      const { chart, messages } = createChart();
+      chart.addCandle(1, 10, 12, 9, 11, 100);
+      const batch = candleBatch([2, 3]);
+      batch[column] = batch[column].subarray(0, 1);
+
+      expect(() => appendBatch(chart, batch)).toThrow("same length");
+
+      expect(messages).toEqual([]);
+      expect(frames.pending()).toBe(1);
+      expect(batch.timestamp.byteLength).toBe(16);
+      frames.flush();
+      expect(Array.from(messages[0].message.timestamps)).toEqual([1]);
+      chart.destroy();
+    },
+  );
+
+  it.each(["overlap", "NaN", "short column", "invalid empty chunk"])(
+    "rejects all chunks atomically when a later chunk contains %s",
+    (problem) => {
+      const frames = installAnimationFrameHarness();
+      const { chart, messages } = createChart();
+      chart.addCandle(1, 10, 12, 9, 11, 100);
+      const first = candleBatch([2, 3]);
+      const last = candleBatch([4, 5]);
+      if (problem === "overlap") last.timestamp[0] = 3;
+      if (problem === "NaN") last.timestamp[1] = Number.NaN;
+      if (problem === "short column") last.close = new Float64Array(1);
+      if (problem === "invalid empty chunk") last.timestamp = new Float64Array(0);
+
+      expect(() => chart.addCandleBatches([first, last])).toThrow();
+
+      expect(messages).toEqual([]);
+      expect(frames.pending()).toBe(1);
+      expect(first.timestamp.byteLength).toBe(16);
+      expect(last.close.byteLength).toBeGreaterThan(0);
+      chart.addCandle(2, 20, 22, 19, 21, 200);
+      frames.flush();
+      expect(Array.from(messages[0].message.timestamps)).toEqual([1, 2]);
+      chart.destroy();
+    },
+  );
+
+  it("tracks the accepted tail across scalar, bulk, chunked and empty appends", () => {
+    const frames = installAnimationFrameHarness();
+    const { chart, messages } = createChart();
+    chart.initStreaming(2);
+    chart.addCandle(-2, 10, 12, 9, 11, 100);
+    frames.flush();
+    appendBatch(chart, candleBatch([-1, 0]));
+    expect(() => chart.addCandle(0, 10, 12, 9, 11, 100)).toThrow("strictly increasing");
+    chart.addCandleBatches([candleBatch([1]), candleBatch([]), candleBatch([2])]);
+    appendBatch(chart, candleBatch([]));
+    chart.addCandleBatches([candleBatch([])]);
+    expect(() => appendBatch(chart, candleBatch([2, 3]))).toThrow("strictly increasing");
+    expect(() => chart.addCandleBatches([candleBatch([2, 3])])).toThrow("strictly increasing");
+    chart.addCandle(3, 10, 12, 9, 11, 100);
+    frames.flush();
+    expect(Array.from(messages.at(-1)!.message.timestamps)).toEqual([3]);
+    chart.destroy();
+  });
+
+  it("resets ordering on a new stream and follows the normalized replacement tail", () => {
+    const frames = installAnimationFrameHarness();
+    const { chart, messages } = createChart();
+    chart.addCandle(100, 10, 12, 9, 11, 100);
+    chart.initStreaming(10);
+    chart.addCandle(1, 10, 12, 9, 11, 100);
+    const replacement = candleBatch([20, 10]);
+    chart.setData({ ...replacement, length: 2 });
+
+    expect(() => chart.addCandle(20, 10, 12, 9, 11, 100)).toThrow("strictly increasing");
+    chart.addCandle(21, 10, 12, 9, 11, 100);
+    frames.flush();
+    expect(Array.from(messages.at(-1)!.message.timestamps)).toEqual([21]);
+    chart.setData({ ...candleBatch([]), length: 0 });
+    chart.addCandle(0, 10, 12, 9, 11, 100);
+    frames.flush();
+    expect(Array.from(messages.at(-1)!.message.timestamps)).toEqual([0]);
+    chart.destroy();
+  });
+
+  it("remembers transferred tails after actual worker-style buffer detachment", () => {
+    const frames = installAnimationFrameHarness();
+    const { chart, worker } = createChart();
+    const postMessage = worker.postMessage.bind(worker);
+    vi.spyOn(worker, "postMessage").mockImplementation((message, transfer) => {
+      postMessage(message, transfer);
+      if (transfer) structuredClone(message, { transfer });
+    });
+    const data = candleBatch([1, 2]);
+    chart.setData({ ...data, length: 2 });
+    expect(data.timestamp.byteLength).toBe(0);
+    expect(() => chart.addCandle(2, 10, 12, 9, 11, 100)).toThrow("strictly increasing");
+    chart.initStreaming(10);
+    const first = candleBatch([3, 4]);
+    appendBatch(chart, first);
+    expect(first.timestamp.byteLength).toBe(0);
+    const second = candleBatch([5, 6]);
+    chart.addCandleBatches([second]);
+    expect(second.timestamp.byteLength).toBe(0);
+    expect(() => appendBatch(chart, candleBatch([6]))).toThrow("strictly increasing");
+    chart.addCandle(7, 10, 12, 9, 11, 100);
+    frames.flush();
+    expect(() => chart.addCandle(7, 10, 12, 9, 11, 100)).toThrow("strictly increasing");
     chart.destroy();
   });
 });

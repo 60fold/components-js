@@ -235,11 +235,34 @@ describe.each(adapters)("$name stats listeners", (adapter) => {
     await setProps({ onStatsOnce });
     expect(chart.statsCallback).toBeTypeOf("function");
     chart.statsCallback?.({ fps: 60 });
+    expect(chart.statsCallback).toBeNull();
     chart.statsCallback?.({ fps: 59 });
     expect(onStatsOnce).toHaveBeenCalledExactlyOnceWith({ fps: 60 });
 
+    // Native .once is consumed for the component lifetime, even if rebound.
+    await setProps({ onStatsOnce: vi.fn(), statsIntervalMs: 500 });
+    expect(chart.statsCallback).toBeNull();
+    const regular = vi.fn();
+    await setProps({ onStats: regular });
+    chart.statsCallback?.({ fps: 58 });
+    expect(regular).toHaveBeenCalledExactlyOnceWith({ fps: 58 });
+    await setProps({ onStats: undefined });
+    expect(chart.statsCallback).toBeNull();
+
     delete props.onStatsOnce;
     await settle();
+    expect(chart.statsCallback).toBeNull();
+  });
+
+  it("keeps collecting for regular listeners after the once listener is consumed", async () => {
+    const onStats = vi.fn();
+    const onStatsOnce = vi.fn();
+    const chart = mount(adapter, { onStats, onStatsOnce });
+    chart.statsCallback?.({ fps: 60 });
+    chart.statsCallback?.({ fps: 59 });
+    expect(onStats).toHaveBeenCalledTimes(2);
+    expect(onStatsOnce).toHaveBeenCalledOnce();
+    await setProps({ onStats: undefined });
     expect(chart.statsCallback).toBeNull();
   });
 });

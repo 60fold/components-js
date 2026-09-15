@@ -49,11 +49,14 @@ export const SixtyfoldLineChart = defineComponent({
     const chart = shallowRef<LineChart | null>(null);
     const vm = getCurrentInstance();
     let ready = false;
+    let readyNotified = false;
     let disposed = false;
+    let rendererFailed = false;
     let appliedData: LineData | undefined;
     let appliedAppearance: DeepPartial<LineAppearanceOptions> | undefined;
     let appliedViewport: Partial<Viewport> | undefined;
     let statsEnabled: boolean | undefined;
+    let statsOnceConsumed = false;
     let statsInterval: number | undefined;
     let reportedRendererError: unknown;
 
@@ -61,16 +64,27 @@ export const SixtyfoldLineChart = defineComponent({
 
     const syncStatsCallback = (): void => {
       const instance = chart.value;
-      if (!instance) return;
-      const enabled = Boolean(props.onStats || props.onStatsOnce);
+      if (!instance || disposed) return;
+      const enabled = Boolean(props.onStats || (props.onStatsOnce && !statsOnceConsumed));
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
       // Native dispatch preserves current listeners, arrays, .once and Vue's
       // error handling even though stats is declared through listener props.
-      instance.setStatsCallback(enabled ? (stats) => vm?.emit("stats", stats) : null, {
-        intervalMs: props.statsIntervalMs,
-      });
+      instance.setStatsCallback(
+        enabled
+          ? (stats) => {
+              if (disposed) return;
+              if (props.onStatsOnce) statsOnceConsumed = true;
+              try {
+                vm?.emit("stats", stats);
+              } finally {
+                syncStatsCallback();
+              }
+            }
+          : null,
+        { intervalMs: props.statsIntervalMs },
+      );
     };
 
     // Installs every reactive prop in a single engine update. Each dataset
@@ -78,21 +92,30 @@ export const SixtyfoldLineChart = defineComponent({
     // identity tracking also prevents duplicate installs in main-thread mode.
     const applyReactiveProps = (): void => {
       const instance = chart.value;
-      if (!ready || !instance) return;
-      instance.batch(() => {
-        if (props.data && props.data !== appliedData) {
-          installLineData(instance, props.data, props.dataUpdateOptions);
-          appliedData = props.data;
-        }
-        if (props.appearance && props.appearance !== appliedAppearance) {
-          instance.updateAppearance(props.appearance);
-          appliedAppearance = props.appearance;
-        }
-        if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
-          instance.setViewport(props.viewport, { animated: props.viewportAnimated });
-          appliedViewport = props.viewport;
-        }
-      });
+      if (!ready || !instance || disposed || rendererFailed) return;
+      try {
+        instance.batch(() => {
+          if (props.data && props.data !== appliedData) {
+            installLineData(instance, props.data, props.dataUpdateOptions);
+            appliedData = props.data;
+          }
+          if (props.appearance && props.appearance !== appliedAppearance) {
+            instance.updateAppearance(props.appearance);
+            appliedAppearance = props.appearance;
+          }
+          if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
+            instance.setViewport(props.viewport, { animated: props.viewportAnimated });
+            appliedViewport = props.viewport;
+          }
+        });
+      } catch (error) {
+        if (!disposed && error !== reportedRendererError) emit("error", error);
+        return;
+      }
+      if (!disposed && !rendererFailed && chart.value === instance && !readyNotified) {
+        readyNotified = true;
+        emit("ready", instance);
+      }
     };
 
     onMounted(() => {
@@ -106,6 +129,7 @@ export const SixtyfoldLineChart = defineComponent({
       }
       chart.value = instance;
       instance.setRendererErrorCallback((error) => {
+        rendererFailed = true;
         reportedRendererError = error;
         if (!disposed) emit("error", error);
       });
@@ -120,7 +144,6 @@ export const SixtyfoldLineChart = defineComponent({
           if (disposed || chart.value !== instance) return;
           ready = true;
           applyReactiveProps();
-          emit("ready", instance);
         })
         .catch((error) => {
           if (!disposed && error !== reportedRendererError) emit("error", error);

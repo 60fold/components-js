@@ -32,6 +32,17 @@ const gridBenchmarkAlias = [
   { find: "@grid-benchmark/types", replacement: fromRoot("packages/grid/src/types.ts") },
 ];
 
+// Keep React DOM's React peer in an isolated workspace fixture; a package
+// alias alone can accidentally bind the old renderer to the root React 19.
+const react18Alias = [
+  { find: /^react(\/.*)?$/, replacement: fromRoot("test/fixtures/react18/node_modules/react$1") },
+  {
+    find: /^react-dom(\/.*)?$/,
+    replacement: fromRoot("test/fixtures/react18/node_modules/react-dom$1"),
+  },
+  ...alias,
+];
+
 // One project per framework: the adapter packages need mutually incompatible
 // JSX transforms and compiler plugins, so they cannot share a single config.
 export default defineConfig({
@@ -74,6 +85,19 @@ export default defineConfig({
           name: "react",
           environment: "jsdom",
           include: ["packages/react/test/**/*.test.tsx"],
+          exclude: ["packages/react/test/react18.test.tsx"],
+        },
+      },
+      {
+        resolve: { alias: react18Alias },
+        oxc: { jsx: { runtime: "automatic" } },
+        test: {
+          name: "react18",
+          environment: "jsdom",
+          include: [
+            "packages/react/test/react18.test.tsx",
+            "packages/react/test/initialProps.test.tsx",
+          ],
         },
       },
       {

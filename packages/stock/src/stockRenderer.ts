@@ -90,6 +90,7 @@ import {
   type RawCandleValues,
 } from "./engine/indicatorRuntime.js";
 import { StockLevelAccess, type AggregatedLevel } from "./engine/levels.js";
+import { validateCandleAppend } from "./streamingValidation.js";
 import {
   buildMarketCoordinates as buildMarketCoordinateState,
   collectMarketDayStarts,
@@ -2581,6 +2582,11 @@ export function createStockChartEngine(
         break;
 
       case "addCandles":
+        validateCandleAppend(
+          data.timestamps,
+          [data.opens, data.highs, data.lows, data.closes, data.volumes],
+          dataLength > 0 ? getRawTimestamp(dataLength - 1) : null,
+        );
         if (data.initialTimeRange && dataLength === 0) {
           deferInitialRenderUntilLODReady = true;
         }
@@ -2594,7 +2600,16 @@ export function createStockChartEngine(
         scheduleRender();
         break;
 
-      case "addCandleBatches":
+      case "addCandleBatches": {
+        let lastTimestamp = dataLength > 0 ? getRawTimestamp(dataLength - 1) : null;
+        // A malformed later chunk must not partially install earlier chunks.
+        for (const batch of data.batches) {
+          lastTimestamp = validateCandleAppend(
+            batch.timestamp,
+            [batch.open, batch.high, batch.low, batch.close, batch.volume],
+            lastTimestamp,
+          );
+        }
         if (dataLength === 0) deferInitialRenderUntilLODReady = true;
         for (let index = 0; index < data.batches.length; index++) {
           const batch = data.batches[index];
@@ -2618,6 +2633,7 @@ export function createStockChartEngine(
         emitViewportSync();
         scheduleRender();
         break;
+      }
 
       case "setStatsConfig":
         applyStatsConfigFromMessage(stats, data);

@@ -33,7 +33,9 @@
   // oxlint-disable-next-line no-unassigned-vars
   let canvas: HTMLCanvasElement;
   let ready = false;
+  let readyNotified = false;
   let disposed = false;
+  let rendererFailed = false;
   let reportedRendererError: unknown;
   let appliedData: OHLCVData | undefined;
   let appliedAppearance: DeepPartial<StockAppearanceOptions> | undefined;
@@ -59,21 +61,34 @@
     nextViewport: Partial<Viewport> | undefined,
     animated: boolean | undefined,
   ): void {
-    if (!isReady || !instance) return;
-    instance.batch(() => {
-      if (nextData && nextData !== appliedData) {
-        instance.setData(nextData);
-        appliedData = nextData;
+    if (!isReady || !instance || disposed || rendererFailed) return;
+    try {
+      instance.batch(() => {
+        if (nextData && nextData !== appliedData) {
+          instance.setData(nextData);
+          appliedData = nextData;
+        }
+        if (nextAppearance && nextAppearance !== appliedAppearance) {
+          instance.updateAppearance(nextAppearance);
+          appliedAppearance = nextAppearance;
+        }
+        if (hasViewport(nextViewport) && nextViewport !== appliedViewport) {
+          instance.setViewport(nextViewport, { animated });
+          appliedViewport = nextViewport;
+        }
+      });
+    } catch (error) {
+      if (!disposed && error !== reportedRendererError) onError?.(error);
+      return;
+    }
+    if (!disposed && !rendererFailed && chart === instance && !readyNotified) {
+      readyNotified = true;
+      try {
+        onReady?.(instance);
+      } catch (error) {
+        if (!disposed) onError?.(error);
       }
-      if (nextAppearance && nextAppearance !== appliedAppearance) {
-        instance.updateAppearance(nextAppearance);
-        appliedAppearance = nextAppearance;
-      }
-      if (hasViewport(nextViewport) && nextViewport !== appliedViewport) {
-        instance.setViewport(nextViewport, { animated });
-        appliedViewport = nextViewport;
-      }
-    });
+    }
   }
 
   onMount(() => {
@@ -86,6 +101,7 @@
     }
     chart = instance;
     instance.setRendererErrorCallback((error) => {
+      rendererFailed = true;
       reportedRendererError = error;
       if (!disposed) onError?.(error);
     });
@@ -96,12 +112,9 @@
       .initialize()
       .then(() => {
         if (disposed || chart !== instance) return;
-        // Install props before publishing readiness; the scheduled reactive
-        // pass must not overwrite imperative changes made inside onReady.
-        applyReactiveProps(true, instance, data, appearance, viewport, viewportAnimated);
-        if (disposed || chart !== instance) return;
+        // The reactive pass installs props before notifying readiness and can
+        // retry with corrected props if the initial installation fails.
         ready = true;
-        onReady?.(instance);
       })
       .catch((error) => {
         if (!disposed && error !== reportedRendererError) onError?.(error);

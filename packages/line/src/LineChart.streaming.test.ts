@@ -54,6 +54,36 @@ function createChart() {
 }
 
 describe("LineChart scalar streaming boundaries", () => {
+  it.each([false, true])(
+    "keeps both scalar queues intact after a snapshot throws (queued=%s)",
+    (queued) => {
+      const { chart, postMessage, frames, flushFrame } = createChart();
+      if (queued) chart.addVector(1, [10, 100]);
+      const values = [20, 200];
+      const error = new Error("cannot read sample");
+      Object.defineProperty(values, "0", {
+        get: () => {
+          throw error;
+        },
+      });
+
+      expect(() => chart.addVector(2, values)).toThrow(error);
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(frames.size).toBe(queued ? 1 : 0);
+      chart.addVector(3, [30, 300]);
+      flushFrame();
+
+      expect(postMessage).toHaveBeenCalledOnce();
+      expect(postMessage.mock.calls[0][0].timestamps).toEqual(
+        new Float64Array(queued ? [1, 3] : [3]),
+      );
+      expect(postMessage.mock.calls[0][0].valuesBySeries).toEqual([
+        new Float64Array(queued ? [10, 30] : [30]),
+        new Float64Array(queued ? [100, 300] : [300]),
+      ]);
+    },
+  );
+
   it("delivers queued scalars before bulk data without copying the bulk arrays", () => {
     const { chart, postMessage, frames, cancelFrame, flushFrame } = createChart();
     const timestamps = new Float64Array([3, 4]);

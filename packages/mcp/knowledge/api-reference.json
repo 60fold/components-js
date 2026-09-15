@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceHash": "5949c062d5febbf517bb17821631fd221e1c5c1c386b52df123789a3a84ee40c",
+  "sourceHash": "ef8b3e3fe0f629d79ded13de1c2960011d0ad5e5f09f71bb7c15db9340d2da75",
   "packages": [
     {
       "name": "@sixtyfold/angular",
@@ -13836,21 +13836,21 @@
                   "name": "addCandle",
                   "kind": "function",
                   "optional": false,
-                  "description": "Add a single candle (batched via rAF for high-frequency updates)",
+                  "description": "Add a candle with a finite, strictly increasing timestamp (batched via rAF).",
                   "signature": "addCandle: (timestamp: number, open: number, high: number, low: number, close: number, volume: number) => void"
                 },
                 {
                   "name": "addCandleBatches",
                   "kind": "function",
                   "optional": false,
-                  "description": "Installs multiple streaming chunks in one renderer turn. Worker mode transfers and detaches each chunk's buffers; main-thread mode retains the arrays by reference. Treat every chunk as one-shot input.",
+                  "description": "Installs multiple streaming chunks in one renderer turn. Worker mode transfers and detaches each chunk's buffers; main-thread mode retains the arrays by reference. Treat every chunk as one-shot input. Every chunk must have aligned columns and finite, strictly increasing timestamps across chunk boundaries and earlier appends. All chunks are validated before transfer.",
                   "signature": "addCandleBatches: (batches: readonly StockCandleBatch[], options?: StockAddCandlesOptions) => void"
                 },
                 {
                   "name": "addCandles",
                   "kind": "function",
                   "optional": false,
-                  "description": "Adds multiple candles in one renderer update. Worker mode transfers and detaches the supplied buffers; main-thread mode retains the arrays by reference. Treat these arrays as one-shot input.",
+                  "description": "Adds multiple candles in one renderer update. Worker mode transfers and detaches the supplied buffers; main-thread mode retains the arrays by reference. Treat these arrays as one-shot input. Columns must have equal lengths, with finite, strictly increasing timestamps after every previously queued or appended candle. Invalid input is not transferred.",
                   "signature": "addCandles: (timestamps: Float64Array, opens: Float64Array, highs: Float64Array, lows: Float64Array, closes: Float64Array, volumes: Float64Array, options?: StockAddCandlesOptions) => void"
                 },
                 {
@@ -16388,7 +16388,7 @@
               "name": "SixtyfoldLineChart",
               "kind": "constant",
               "description": "Vue host for a Sixtyfold line chart. The component is SSR-safe and emits the underlying chart on readiness.",
-              "signature": "SixtyfoldLineChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: LineChart) => true; error: (_error: unknown) => true; stats: (_stats: LineChartStats) => true; seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; }>> & Readonly<{ onReady?: ((_chart: LineChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; onStats?: ((_stats: LineChartStats) => any) | undefined; onSeriesVisibilityChange?: ((_event: SeriesVisibilityChangeEvent) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
+              "signature": "SixtyfoldLineChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: LineChart) => true; error: (_error: unknown) => true; seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>> & Readonly<{ onReady?: ((_chart: LineChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; onSeriesVisibilityChange?: ((_event: SeriesVisibilityChangeEvent) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
               "members": []
             }
           ]
@@ -16400,7 +16400,7 @@
               "name": "SixtyfoldStockChart",
               "kind": "constant",
               "description": "Vue host for a Sixtyfold stock chart.",
-              "signature": "SixtyfoldStockChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: StockChart) => true; error: (_error: unknown) => true; stats: (_stats: StockChartStats) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; }>> & Readonly<{ onReady?: ((_chart: StockChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; onStats?: ((_stats: StockChartStats) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
+              "signature": "SixtyfoldStockChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: StockChart) => true; error: (_error: unknown) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>> & Readonly<{ onReady?: ((_chart: StockChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
               "members": []
             }
           ]

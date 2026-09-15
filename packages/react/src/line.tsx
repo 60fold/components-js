@@ -128,8 +128,8 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
     // Worker mode transfers its buffers; identity tracking also prevents
     // duplicate installs in main-thread mode.
     const applyReactiveProps = useCallback((): void => {
-      const { chart, ready, active } = lifetimeRef.current;
-      if (!active || !ready || !chart) return;
+      const { chart, ready, active, rendererFailed } = lifetimeRef.current;
+      if (!active || !ready || !chart || rendererFailed) return;
       const current = latestRef.current;
       chart.batch(() => {
         if (current.data && current.data !== appliedDataRef.current) {
@@ -159,10 +159,17 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
 
     const connectReadyChart = useCallback((): void => {
       const lifetime = lifetimeRef.current;
-      if (!lifetime.active || !lifetime.ready || !lifetime.chart) return;
+      if (!lifetime.active || !lifetime.ready || !lifetime.chart || lifetime.rendererFailed) return;
       const chart = lifetime.chart;
       applyReactiveProps();
-      if (!lifetime.active || lifetime.disposed || lifetime.chart !== chart) return;
+      if (
+        !lifetime.active ||
+        lifetime.disposed ||
+        lifetime.chart !== chart ||
+        lifetime.rendererFailed
+      ) {
+        return;
+      }
       if (!lifetime.readyNotified) {
         lifetime.readyNotified = true;
         latestRef.current.onReady?.(chart);
@@ -198,6 +205,8 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
           let reportedRendererError: unknown;
           chart.setRendererErrorCallback((error) => {
             reportedRendererError = error;
+            lifetime.rendererFailed = true;
+            lifetime.ready = false;
             reportError(error);
           });
           chart.setOverlayErrorCallback(reportError);
@@ -208,7 +217,7 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
           void chart
             .initialize()
             .then(() => {
-              if (lifetime.disposed || lifetime.chart !== chart) return;
+              if (lifetime.disposed || lifetime.chart !== chart || lifetime.rendererFailed) return;
               lifetime.ready = true;
               connectReadyChart();
             })
@@ -242,8 +251,20 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
     }, [connectReadyChart, lifetimeRef, reportError]);
 
     useEffect(() => {
-      applyReactiveProps();
-    }, [applyReactiveProps, data, dataUpdateOptions, appearance, viewport, viewportAnimated]);
+      try {
+        connectReadyChart();
+      } catch (error) {
+        reportError(error);
+      }
+    }, [
+      connectReadyChart,
+      reportError,
+      data,
+      dataUpdateOptions,
+      appearance,
+      viewport,
+      viewportAnimated,
+    ]);
 
     useEffect(() => {
       const lifetime = lifetimeRef.current;

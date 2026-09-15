@@ -1,6 +1,7 @@
 // StockChart component - extends BaseChart for OHLCV candlestick rendering
 
 import { normalizeOHLCVData, type OHLCVData } from "./ohlcv.js";
+import { validateCandleAppend, validateCandleTimestamp } from "./streamingValidation.js";
 import {
   BaseChart,
   BaseChartOptions,
@@ -326,6 +327,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
   }[] = [];
   private batchFlushFrame: number | null = null;
   private streamingCapacity: number | null = null;
+  private lastCandleTimestamp: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, options: StockChartOptions = {}) {
     const { cleaned, onRender, onLeave } = BaseChart.stripTooltipCallbacks(options.tooltip);
@@ -633,6 +635,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
   setData(data: OHLCVData): void {
     if (this.destroyed) return;
     data = normalizeOHLCVData(data);
+    const lastTimestamp = data.length > 0 ? data.timestamp[data.length - 1] : null;
     this.flushViewportInputs();
     const transferList = collectTransferables([
       data.timestamp,
@@ -656,6 +659,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
       },
       transferList,
     );
+    this.lastCandleTimestamp = lastTimestamp;
     this.worker.postMessage({ type: "start" });
     this.emitTimeRangeChange("ALL", "data");
   }
@@ -670,6 +674,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     this.flushViewportInputs();
     this.discardPendingCandles();
     this.streamingCapacity = maxCandles;
+    this.lastCandleTimestamp = null;
     this.worker.postMessage({
       type: "initRingBuffer",
       maxCandles,
@@ -678,7 +683,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     this.emitTimeRangeChange("ALL", "data");
   }
 
-  /** Add a single candle (batched via rAF for high-frequency updates) */
+  /** Add a candle with a finite, strictly increasing timestamp (batched via rAF). */
   addCandle(
     timestamp: number,
     open: number,
@@ -688,8 +693,10 @@ export class StockChart extends BaseChart<StockChartOptions> {
     volume: number,
   ): void {
     if (this.destroyed) return;
+    validateCandleTimestamp(timestamp, this.lastCandleTimestamp);
     this.flushViewportInputs();
     this.pendingCandles.push({ timestamp, open, high, low, close, volume });
+    this.lastCandleTimestamp = timestamp;
 
     if (this.batchFlushFrame === null) {
       const frame = requestAnimationFrame(() => {
@@ -752,6 +759,8 @@ export class StockChart extends BaseChart<StockChartOptions> {
    *
    * Worker mode transfers and detaches the supplied buffers; main-thread mode
    * retains the arrays by reference. Treat these arrays as one-shot input.
+   * Columns must have equal lengths, with finite, strictly increasing timestamps
+   * after every previously queued or appended candle. Invalid input is not transferred.
    */
   addCandles(
     timestamps: Float64Array,
@@ -763,10 +772,16 @@ export class StockChart extends BaseChart<StockChartOptions> {
     options: StockAddCandlesOptions = {},
   ): void {
     if (this.destroyed) return;
+    const lastTimestamp = validateCandleAppend(
+      timestamps,
+      [opens, highs, lows, closes, volumes],
+      this.lastCandleTimestamp,
+    );
     this.flushViewportInputs();
     const transferList = collectTransferables([timestamps, opens, highs, lows, closes, volumes]);
     this.flushBatch();
     this.sendCandles(timestamps, opens, highs, lows, closes, volumes, options, transferList);
+    this.lastCandleTimestamp = lastTimestamp;
   }
 
   private sendCandles(
@@ -802,12 +817,22 @@ export class StockChart extends BaseChart<StockChartOptions> {
    *
    * Worker mode transfers and detaches each chunk's buffers; main-thread mode
    * retains the arrays by reference. Treat every chunk as one-shot input.
+   * Every chunk must have aligned columns and finite, strictly increasing timestamps
+   * across chunk boundaries and earlier appends. All chunks are validated before transfer.
    */
   addCandleBatches(
     batches: readonly StockCandleBatch[],
     options: StockAddCandlesOptions = {},
   ): void {
     if (this.destroyed) return;
+    let lastTimestamp = this.lastCandleTimestamp;
+    for (const batch of batches) {
+      lastTimestamp = validateCandleAppend(
+        batch.timestamp,
+        [batch.open, batch.high, batch.low, batch.close, batch.volume],
+        lastTimestamp,
+      );
+    }
     const nonEmptyBatches = batches.filter((batch) => batch.timestamp.length > 0);
     if (nonEmptyBatches.length === 0) return;
     this.flushViewportInputs();
@@ -830,6 +855,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
       },
       transferList,
     );
+    this.lastCandleTimestamp = lastTimestamp;
     if (options.initialTimeRange) {
       this.deferInBatch(() => this.emitTimeRangeChange(options.initialTimeRange!, "api"));
     }

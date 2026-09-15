@@ -52,6 +52,12 @@ application build's `assets` array:
 ]
 ```
 
+`chartReady` fires once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. It does not wait for a painted
+frame. A rejected prop installation reports `chartError`; supply corrected props
+to retry without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
+
 ## Licensing
 
 This package is source-available under the

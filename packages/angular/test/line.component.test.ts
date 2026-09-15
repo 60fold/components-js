@@ -42,6 +42,98 @@ afterEach(() => {
 });
 
 describe("SixtyfoldLineChartComponent", () => {
+  it.each(["after rejected initial props", "before the initialization reaction"] as const)(
+    "does not publish readiness after a terminal renderer failure %s",
+    async (timing) => {
+      component = createComponent();
+      const onReady = vi.fn();
+      const onError = vi.fn();
+      component.chartReady.subscribe(onReady);
+      component.chartError.subscribe(onError);
+      const data = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+      component.data = data;
+      component.ngAfterViewInit();
+      const chart = lastChart(FakeLineChart);
+      const install = vi.spyOn(chart, "setData");
+      const propError = new Error("invalid initial data");
+      if (timing === "after rejected initial props") {
+        install.mockImplementationOnce(() => {
+          throw propError;
+        });
+        chart.becomeReady();
+        await settle();
+        expect(onError).toHaveBeenCalledExactlyOnceWith(propError);
+      } else {
+        chart.becomeReady();
+      }
+      const failure = new Error("terminal renderer failure");
+      chart.failRuntime(failure);
+      await settle();
+
+      component.data = { ...data };
+      component.ngOnChanges({});
+
+      expect(install).toHaveBeenCalledTimes(timing === "after rejected initial props" ? 1 : 0);
+      expect(chart.callsTo("setData")).toHaveLength(0);
+      expect(onReady).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenLastCalledWith(failure);
+      expect(onError).toHaveBeenCalledTimes(timing === "after rejected initial props" ? 2 : 1);
+    },
+  );
+
+  it("does not reinstall transferred data when a later initial prop fails", async () => {
+    component = createComponent();
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    component.chartReady.subscribe(onReady);
+    component.chartError.subscribe(onError);
+    component.data = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+    component.appearance = {};
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeLineChart);
+    vi.spyOn(chart, "updateAppearance").mockImplementationOnce(() => {
+      throw new Error("invalid appearance");
+    });
+    chart.becomeReady();
+    await settle();
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    component.appearance = { grid: { color: "#123456" } };
+    component.ngOnChanges({});
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+  });
+
+  it("recovers from initial prop errors and notifies readiness only after a successful batch", async () => {
+    component = createComponent();
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    component.chartReady.subscribe(onReady);
+    component.chartError.subscribe(onError);
+    const data = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+    component.data = data;
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeLineChart);
+    const error = new Error("invalid initial data");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw error;
+    });
+    chart.becomeReady();
+    await settle();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(onReady).not.toHaveBeenCalled();
+    expect(chart.destroyed).toBe(false);
+    const replacement = { ...data };
+    component.data = replacement;
+    component.ngOnChanges({});
+    expect(chart.callsTo("setData").at(-1)?.args[0]).toBe(replacement);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    component.data = { ...data };
+    component.ngOnChanges({});
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
   it("installs a dataset exactly once when it arrives before the chart is ready", async () => {
     component = createComponent();
     component.ngAfterViewInit();

@@ -33,6 +33,12 @@ overlay resolution or renderer-delivery failures. Renderer and overlay failures
 can be narrowed with `ChartRendererError` and `ChartOverlayError` from the
 installed chart engine.
 
+`onReady` fires once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. It does not wait for a painted
+frame. A rejected prop installation reports `onError`; supply corrected props
+to retry without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
+
 ## Licensing
 
 This package is source-available under the
