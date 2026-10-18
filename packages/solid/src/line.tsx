@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount, type JSX } from "solid-js";
+import { createEffect, onCleanup, onMount, untrack, type JSX } from "solid-js";
 import type { DeepPartial, Viewport } from "@sixtyfold/core";
 import {
   LineChart,
@@ -80,7 +80,7 @@ export function SixtyfoldLineChart(props: SixtyfoldLineChartProps): JSX.Element 
     void props.appearance;
     void props.viewport;
     void props.viewportAnimated;
-    apply();
+    untrack(() => apply());
   });
   createEffect(() => {
     const onStats = props.onStats;

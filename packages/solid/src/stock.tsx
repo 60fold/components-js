@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount, type JSX } from "solid-js";
+import { createEffect, onCleanup, onMount, untrack, type JSX } from "solid-js";
 import type { DeepPartial, Viewport } from "@sixtyfold/core";
 import {
   StockChart,
@@ -76,7 +76,7 @@ export function SixtyfoldStockChart(props: SixtyfoldStockChartProps): JSX.Elemen
     void props.appearance;
     void props.viewport;
     void props.viewportAnimated;
-    apply();
+    untrack(() => apply());
   });
   createEffect(() => {
     const onStats = props.onStats;

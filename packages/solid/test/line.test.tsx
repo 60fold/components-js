@@ -121,6 +121,28 @@ describe("SixtyfoldLineChart", () => {
     expect(onReady).toHaveBeenCalledOnce();
   });
 
+  it("does not loop infinitely when onError reads and updates a Solid signal on invalid reactive data", async () => {
+    const initial = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+    const [data, setData] = createSignal(initial);
+    const [errors, setErrors] = createSignal<unknown[]>([]);
+    const onError = vi.fn((error: unknown) => {
+      setErrors([...errors(), error]);
+    });
+    dispose = render(() => <SixtyfoldLineChart data={data()} onError={onError} />, container);
+    const chart = lastChart(FakeLineChart);
+    chart.becomeReady();
+    await settle();
+
+    const invalidError = new Error("invalid reactive data");
+    vi.spyOn(chart, "setData").mockImplementation(() => {
+      throw invalidError;
+    });
+    setData({ ...initial });
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(invalidError);
+    expect(errors()).toEqual([invalidError]);
+  });
+
   it("installs a dataset exactly once when it arrives before the chart is ready", async () => {
     const [data, setData] = createSignal<object | undefined>(undefined);
     dispose = render(() => <SixtyfoldLineChart data={data() as never} />, container);

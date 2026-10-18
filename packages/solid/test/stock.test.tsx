@@ -152,6 +152,28 @@ describe("SixtyfoldStockChart", () => {
     expect(onReady).toHaveBeenCalledOnce();
   });
 
+  it("does not loop infinitely when onError reads and updates a Solid signal on invalid reactive data", async () => {
+    const initial = ohlcv();
+    const [data, setData] = createSignal(initial);
+    const [errors, setErrors] = createSignal<unknown[]>([]);
+    const onError = vi.fn((error: unknown) => {
+      setErrors([...errors(), error]);
+    });
+    dispose = render(() => <SixtyfoldStockChart data={data()} onError={onError} />, container);
+    const chart = lastChart(FakeStockChart);
+    chart.becomeReady();
+    await settle();
+
+    const invalidError = new Error("invalid reactive data");
+    vi.spyOn(chart, "setData").mockImplementation(() => {
+      throw invalidError;
+    });
+    setData({ ...initial });
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(invalidError);
+    expect(errors()).toEqual([invalidError]);
+  });
+
   function renderChart(props: Parameters<typeof SixtyfoldStockChart>[0] = {}): FakeChart {
     dispose = render(() => <SixtyfoldStockChart {...props} />, container);
     return lastChart(FakeStockChart);
