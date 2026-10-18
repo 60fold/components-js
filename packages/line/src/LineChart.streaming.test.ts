@@ -303,4 +303,83 @@ describe("LineChart streaming initialization validation", () => {
     expect(postMessage).not.toHaveBeenCalled();
     expect(frames.size).toBe(0);
   });
+
+  it.each(["single", "multi"] as const)(
+    "resets expectedSeriesCount when %s-series static data is installed",
+    (kind) => {
+      const { chart, postMessage, flushFrame } = createChart();
+      const x = new Float64Array([10, 20]);
+      const y = new Float64Array([1, 2]);
+
+      if (kind === "single") chart.setData({ x, y, length: 2 });
+      else chart.setMultiSeriesData({ x, series: [y], length: 2, seriesCount: 1 });
+      postMessage.mockClear();
+
+      // Previously initStreaming(2, 10) required 2 series; after setData, 1 series or 3 series works,
+      // while mismatched pending addVector lengths are still rejected.
+      chart.addVector(30, [3, 30, 300]);
+      expect(() => chart.addVector(40, [4])).toThrow("addVector: expected 3 values, got 1");
+      flushFrame();
+
+      expect(postMessage).toHaveBeenCalledOnce();
+      expect(postMessage.mock.calls[0][0]).toEqual({
+        type: "addDataPoints",
+        timestamps: new Float64Array([30]),
+        valuesBySeries: [new Float64Array([3]), new Float64Array([30]), new Float64Array([300])],
+      });
+    },
+  );
+
+  it.each([NaN, Infinity, -Infinity])(
+    "rejects non-finite scalar timestamp %s before mutating queued samples",
+    (invalidTimestamp) => {
+      const { chart, postMessage, frames, flushFrame } = createChart();
+      chart.addVector(1, [10, 100]);
+
+      expect(() => chart.addVector(invalidTimestamp, [20, 200])).toThrow(
+        new RangeError("Line streaming timestamp must be a finite number"),
+      );
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(frames.size).toBe(1);
+
+      flushFrame();
+      expect(postMessage).toHaveBeenCalledOnce();
+      expect(postMessage.mock.calls[0][0].timestamps).toEqual(new Float64Array([1]));
+    },
+  );
+
+  it("validates array/typed-array contracts in addVector and addVectors before flushing", () => {
+    const { chart, postMessage, frames, flushFrame } = createChart();
+    chart.addVector(1, [10, 100]);
+
+    expect(() => chart.addVector(2, null as unknown as number[])).toThrow(
+      new TypeError("addVector: values must be an array"),
+    );
+    expect(() =>
+      chart.addVectors([2] as unknown as Float64Array, [
+        new Float64Array([20]),
+        new Float64Array([200]),
+      ]),
+    ).toThrow(new TypeError("addVectors: timestamps must be a Float64Array"));
+    expect(() =>
+      chart.addVectors(new Float64Array([2]), null as unknown as Float64Array[]),
+    ).toThrow(new TypeError("addVectors: valuesBySeries must be an array of Float64Array"));
+    expect(() =>
+      chart.addVectors(new Float64Array([2]), [
+        new Float64Array([20]),
+        [200] as unknown as Float64Array,
+      ]),
+    ).toThrow(new TypeError("addVectors: series 1 must be a Float64Array"));
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(frames.size).toBe(1);
+
+    // An empty addVectors call flushes queued scalar samples without posting an empty batch.
+    chart.addVectors(new Float64Array(0), [new Float64Array(0), new Float64Array(0)]);
+    expect(postMessage).toHaveBeenCalledOnce();
+    expect(postMessage.mock.calls[0][0].timestamps).toEqual(new Float64Array([1]));
+
+    flushFrame();
+    expect(postMessage).toHaveBeenCalledOnce();
+  });
 });

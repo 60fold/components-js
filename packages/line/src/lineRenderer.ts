@@ -1678,7 +1678,10 @@ export function createLineChartEngine(
     return lo;
   }
 
+  let hasCompletedLODBuild = false;
+
   function resetRawLODLevels(): void {
+    hasCompletedLODBuild = false;
     lodLevelsBySeries = [];
     rangeLodLevelsBySeries = [];
     for (let s = 0; s < seriesConfig.count; s++) {
@@ -1782,6 +1785,15 @@ export function createLineChartEngine(
       clearTimeout(lodBuildTimer);
       lodBuildTimer = null;
     }
+    if (!hasCompletedLODBuild && activeLODBuild && lodLevelsBySeries === activeLODBuild.levels) {
+      for (const levels of lodLevelsBySeries) {
+        if (levels && levels.length > 1) levels.length = 1;
+      }
+      for (const rangeLevels of rangeLodLevelsBySeries) {
+        if (rangeLevels && rangeLevels.length > 1) rangeLevels.length = 1;
+      }
+      lodLevelsBuilt = 1;
+    }
     lodRebuildDeadline = 0;
     activeLODBuild = null;
     lodRebuildRequested = false;
@@ -1881,6 +1893,9 @@ export function createLineChartEngine(
   }
 
   function hasBuiltLOD(): boolean {
+    if (!hasCompletedLODBuild || (activeLODBuild && lodLevelsBySeries === activeLODBuild.levels)) {
+      return false;
+    }
     const levels = lodLevelsBySeries[0];
     return !!levels && levels.some((level) => level.bucketSize > 1 && level.bucketCount > 0);
   }
@@ -2045,7 +2060,7 @@ export function createLineChartEngine(
     previousDataLength = 0;
     totalPointsReceived = 0;
     seriesConfig.count = count;
-    presentationGridAnchorX = NaN;
+    presentationGridAnchorX = 0;
     presentationGridQuantumX = 1;
     presentationColumnBuffers.length = seriesConfig.count;
     rangePresentationColumnBuffers.length = seriesConfig.count;
@@ -2084,6 +2099,7 @@ export function createLineChartEngine(
     if (!dataX || !ringBufferMode) return;
 
     const count = timestamps.length;
+    if (count === 0) return;
     protectLODBuildPrefix(count);
     if (totalPointsReceived === 0 && count > 0 && Number.isFinite(timestamps[0])) {
       presentationGridAnchorX = timestamps[0];
@@ -2095,8 +2111,8 @@ export function createLineChartEngine(
     } else if (totalPointsReceived === 1 && count > 0 && Number.isFinite(presentationGridAnchorX)) {
       presentationGridQuantumX = resolvePresentationGridQuantum(
         presentationGridAnchorX,
-        timestamps[0],
-        2,
+        timestamps[count - 1],
+        count + 1,
       );
     }
     for (let i = 0; i < count; i++) {
@@ -2127,7 +2143,7 @@ export function createLineChartEngine(
     previousDataLength = dataLength;
   }
 
-  function recalculateBounds() {
+  function recalculateBounds(emitSync = true) {
     if (!dataX || dataLength === 0) return;
 
     const previousBounds = state.dataBounds;
@@ -2151,8 +2167,11 @@ export function createLineChartEngine(
     const bounds = normalizeBounds(getXAt(0), getXAt(dataLength - 1), yMin, yMax, minRange);
     state.dataBounds = bounds;
 
-    // Line charts snap the Y range to the data on each recompute; only the X
-    // range follows/preserves the prior viewport.
+    // When rendering is active (state.ctx is present), preserve the prior Y
+    // viewport while following X so render()'s visible-series/visible-range
+    // setYViewport animation is not clobbered by global all-series bounds on
+    // every streaming append. Only on a reset or in headless bounds mode
+    // (!state.ctx) does it snap to nextY.
     const nextX = followViewportX(
       previousViewport,
       previousBounds,
@@ -2162,14 +2181,74 @@ export function createLineChartEngine(
       minRange,
     );
     const nextY = applyYDomain(bounds.yMin, bounds.yMax, yDomain);
-    state.viewport = {
-      xMin: nextX.xMin,
-      xMax: nextX.xMax,
-      yMin: nextY.min,
-      yMax: nextY.max,
-    };
+    state.viewport =
+      nextX.reset || !state.ctx
+        ? {
+            xMin: nextX.xMin,
+            xMax: nextX.xMax,
+            yMin: nextY.min,
+            yMax: nextY.max,
+          }
+        : { ...previousViewport, xMin: nextX.xMin, xMax: nextX.xMax };
 
-    emitViewportSync();
+    if (emitSync) emitViewportSync();
+  }
+
+  function recalculateStaticBounds(): void {
+    if (!dataX || dataLength === 0 || ringBufferMode) return;
+    let globalYMin = Infinity;
+    let globalYMax = -Infinity;
+
+    for (let s = 0; s < seriesConfig.count; s++) {
+      const y = dataSeries[s];
+      const range = rangeSeriesData[s];
+      const barBaseline = getBarBaselineForBounds(s);
+      if (barBaseline !== null) {
+        if (barBaseline < globalYMin) globalYMin = barBaseline;
+        if (barBaseline > globalYMax) globalYMax = barBaseline;
+      }
+      for (let i = 0; i < dataLength; i++) {
+        if (range) {
+          const low = getRangeLowerAt(s, i);
+          const high = getRangeUpperAt(s, i);
+          if (Number.isFinite(low) && Number.isFinite(high)) {
+            if (low < globalYMin) globalYMin = low;
+            if (high > globalYMax) globalYMax = high;
+          }
+        }
+        const val = y[i];
+        if (Number.isFinite(val)) {
+          if (val < globalYMin) globalYMin = val;
+          if (val > globalYMax) globalYMax = val;
+        }
+      }
+    }
+
+    includeStackedAreaBounds(
+      0,
+      dataLength - 1,
+      () => true,
+      (value) => {
+        if (value < globalYMin) globalYMin = value;
+        if (value > globalYMax) globalYMax = value;
+      },
+    );
+
+    state.dataBounds = normalizeBounds(
+      dataX[0],
+      dataX[dataLength - 1],
+      globalYMin,
+      globalYMax,
+      minRange,
+    );
+    if (!state.ctx) {
+      const nextY = applyYDomain(state.dataBounds.yMin, state.dataBounds.yMax, yDomain);
+      state.viewport = {
+        ...state.viewport,
+        yMin: nextY.min,
+        yMax: nextY.max,
+      };
+    }
   }
 
   function buildLODLevels() {
@@ -2183,6 +2262,7 @@ export function createLineChartEngine(
     lodRebuildDeadline = 0;
     lodRebuildRequested = false;
     const sourceDataLength = dataLength;
+    const sourceStartIndex = ringBufferMode ? totalPointsReceived - dataLength : 0;
     lodBuildComplete = false;
     state.rangePreviewValid = false;
     resetCachedYMinMax();
@@ -2192,11 +2272,29 @@ export function createLineChartEngine(
     const retainLevels = hasBuiltLOD();
     const build: LODBuild = {
       sourceDataLength,
-      sourceStartIndex: ringBufferMode ? totalPointsReceived - dataLength : 0,
+      sourceStartIndex,
       x: dataX,
       series: dataSeries,
-      levels: lodLevelsBySeries.map((levels) => [levels[0]]),
-      rangeLevels: rangeLodLevelsBySeries.map((levels) => (levels ? [levels[0]] : null)),
+      levels: lodLevelsBySeries.map((levels) => [
+        {
+          ...levels[0],
+          bucketCount: sourceDataLength,
+          sourceDataLength,
+          sourceStartIndex,
+        },
+      ]),
+      rangeLevels: rangeLodLevelsBySeries.map((levels) =>
+        levels
+          ? [
+              {
+                ...levels[0],
+                bucketCount: sourceDataLength,
+                sourceDataLength,
+                sourceStartIndex,
+              },
+            ]
+          : null,
+      ),
     };
     if (ringBufferMode && bufferFull) copyLODBuildSource(build, writeIndex);
     activeLODBuild = build;
@@ -2209,7 +2307,7 @@ export function createLineChartEngine(
     const coarsestIdx = LOD_BUCKET_SIZES.length - 1;
     buildLODLevel(coarsestIdx, sourceDataLength);
     resetCachedYMinMax();
-    if (!retainLevels) lodLevelsBuilt = 2;
+    if (!retainLevels) lodLevelsBuilt = build.levels[0]?.length ?? 1;
 
     buildRemainingLODs(coarsestIdx - 1, build);
   }
@@ -3122,6 +3220,7 @@ export function createLineChartEngine(
       rangeLodLevelsBySeries = build.rangeLevels;
       updateRawLODLevelLengths();
       activeLODBuild = null;
+      hasCompletedLODBuild = true;
       lodLevelsBuilt = LOD_BUCKET_SIZES.length;
       lodBuildComplete = true;
       stats.nextEmitAt = 0;
@@ -3137,7 +3236,7 @@ export function createLineChartEngine(
       for (let idx = startIdx; idx >= 1; idx--) {
         buildLODLevel(idx, build.sourceDataLength);
         resetCachedYMinMax();
-        if (lodLevelsBySeries === build.levels) lodLevelsBuilt++;
+        if (lodLevelsBySeries === build.levels) lodLevelsBuilt = build.levels[0]?.length ?? 1;
       }
       buildRemainingLODs(0, build);
       return;
@@ -3148,7 +3247,7 @@ export function createLineChartEngine(
       lodBuildTimer = null;
       buildLODLevel(startIdx, build.sourceDataLength);
       resetCachedYMinMax();
-      if (lodLevelsBySeries === build.levels) lodLevelsBuilt++;
+      if (lodLevelsBySeries === build.levels) lodLevelsBuilt = build.levels[0]?.length ?? 1;
       buildRemainingLODs(startIdx - 1, build);
     }, 10);
   }
@@ -7424,8 +7523,10 @@ export function createLineChartEngine(
       const index = data.index as number;
       const patch = data.patch as Record<string, any>;
       if (Number.isInteger(index) && index >= 0) {
-        const wasStacked =
-          index < seriesConfig.count && isStackedAreaSeriesType(getSeriesType(index));
+        const previousType = index < seriesConfig.count ? getSeriesType(index) : undefined;
+        const previousBarBaseline =
+          index < seriesConfig.count ? getBarBaselineForBounds(index) : null;
+        const wasStacked = previousType !== undefined && isStackedAreaSeriesType(previousType);
         while (seriesConfig.options.length <= index) seriesConfig.options.push({});
         const current = (seriesConfig.options[index] ?? {}) as Record<string, any>;
         rendererDeepMerge(current, patch);
@@ -7435,11 +7536,40 @@ export function createLineChartEngine(
         legend.invalidateMeasurements();
         gradientDefinitionRevision++;
         gradientCache.clear();
-        const isStacked =
-          index < seriesConfig.count && isStackedAreaSeriesType(getSeriesType(index));
+        const nextType = index < seriesConfig.count ? getSeriesType(index) : undefined;
+        const nextBarBaseline = index < seriesConfig.count ? getBarBaselineForBounds(index) : null;
+        const isStacked = nextType !== undefined && isStackedAreaSeriesType(nextType);
         if (wasStacked !== isStacked) {
           rebuildStackedBoundsIndex();
           rebuildStreamingBoundsIndex();
+        }
+        if (
+          dataX &&
+          dataLength > 0 &&
+          index < seriesConfig.count &&
+          (previousType !== nextType || previousBarBaseline !== nextBarBaseline)
+        ) {
+          if (ringBufferMode) {
+            recalculateBounds(false);
+          } else {
+            recalculateStaticBounds();
+          }
+        }
+        if (
+          dataX &&
+          dataLength > 0 &&
+          index < seriesConfig.count &&
+          previousType !== undefined &&
+          nextType !== undefined &&
+          isDiscreteSeriesType(previousType) !== isDiscreteSeriesType(nextType)
+        ) {
+          cancelLODWork();
+          if (ringBufferMode) {
+            lodBuildComplete = false;
+            scheduleLODRebuild();
+          } else {
+            buildLODLevels();
+          }
         }
         if (patch.marker) resetMarkerCache();
         presentationResolvedRangeGridDelta = NaN;

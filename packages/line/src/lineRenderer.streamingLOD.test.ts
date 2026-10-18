@@ -241,4 +241,94 @@ describe("line streaming LOD snapshots", () => {
     // buckets plus the two tiny fringes leave room for drawing and axes too.
     expect(finiteChecks.mock.calls.length).toBeLessThan(30_000);
   });
+
+  it("treats empty addDataPoints batches as a no-op", () => {
+    const chart = harness(2048);
+    chart.append(0, 100);
+    const state = getLineEngineState(chart.engine);
+    state.cacheValid = true;
+    const beforeXMax = state.dataBounds.xMax;
+
+    chart.engine.handleMessage("addDataPoints", {
+      timestamps: new Float64Array(0),
+      valuesBySeries: [new Float64Array(0), new Float64Array(0)],
+    });
+
+    expect(state.dataBounds.xMax).toBe(beforeXMax);
+    expect(state.cacheValid).toBe(true);
+  });
+
+  it("tracks staged progress during the first progressive LOD build and discards incomplete partial builds when cancelled", () => {
+    const chart = harness(2048);
+    chart.append(0, 2000);
+    // At 16ms buildLODLevels starts (skipping 4096 >= 2000); at 26ms the 1024 level builds.
+    vi.advanceTimersByTime(30);
+    const midStats = chart.render(0, 1999).stats;
+    expect(midStats.lodReady).toBe(false);
+    expect(midStats.lodBuilt as number).toBeGreaterThan(1);
+    expect(midStats.lodBuilt as number).toBeLessThan(midStats.lodTotal as number);
+
+    // Cancel the first build before completion by switching series type; partial levels must be discarded
+    chart.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { type: "bar" },
+    });
+    const cancelledStats = chart.render(0, 1999).stats;
+    expect(cancelledStats.lodReady).toBe(false);
+    expect(cancelledStats.lodBuilt).toBe(1);
+
+    vi.advanceTimersByTime(200);
+    const settledStats = chart.render(0, 1999).stats;
+    expect(settledStats.lodReady).toBe(true);
+    expect(settledStats.lodBuilt).toBe(settledStats.lodTotal);
+  });
+
+  it("rebuilds LOD hierarchy when updateSeriesAppearance switches between continuous and discrete series types", () => {
+    const chart = harness(2048);
+    chart.append(0, 2048);
+    vi.advanceTimersByTime(100);
+    expect(chart.render(0, 2047).stats.lodReady).toBe(true);
+
+    chart.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { type: "bar" },
+    });
+    // Switching from continuous ("line") to discrete ("bar") schedules a fresh LOD rebuild
+    expect(chart.render(0, 2047).stats.lodReady).toBe(false);
+
+    vi.advanceTimersByTime(200);
+    expect(chart.render(0, 2047).stats.lodReady).toBe(true);
+  });
+
+  it("resets presentation grid quantum on initRingBuffer and derives quantum across multi-point second batches", () => {
+    const chart = harness(2048);
+
+    // First batch has 1 point at t = 0; second batch starts at t = 0 and spans to 3_000_000 across 1000 points.
+    // Using timestamps[count - 1] and count + 1 derives a coarse quantum (~1024) instead of collapsing on timestamps[0] === 0.
+    chart.engine.handleMessage("addDataPoints", {
+      timestamps: new Float64Array([0]),
+      valuesBySeries: [new Float64Array([1]), new Float64Array([2])],
+    });
+    const secondBatchCount = 1000;
+    chart.engine.handleMessage("addDataPoints", {
+      timestamps: Float64Array.from({ length: secondBatchCount }, (_, i) => i * 3000),
+      valuesBySeries: [
+        new Float64Array(secondBatchCount).fill(10),
+        new Float64Array(secondBatchCount).fill(20),
+      ],
+    });
+    vi.advanceTimersByTime(100);
+    const coarseStats = chart.render(0, 3_000_000).stats;
+    expect(coarseStats.presentationGridDelta as number).toBeGreaterThanOrEqual(1024);
+
+    // Re-initializing the ring buffer resets presentationGridQuantumX back to 1 so a fine-grained stream is not over-quantized
+    chart.engine.handleMessage("initRingBuffer", { maxPoints: 2048, seriesCount: 2 });
+    chart.engine.handleMessage("addDataPoints", {
+      timestamps: Float64Array.from({ length: 1000 }, (_, i) => i),
+      valuesBySeries: [new Float64Array(1000).fill(10), new Float64Array(1000).fill(20)],
+    });
+    vi.advanceTimersByTime(100);
+    const fineStats = chart.render(0, 999).stats;
+    expect(fineStats.presentationGridDelta as number).toBeLessThan(100);
+  });
 });

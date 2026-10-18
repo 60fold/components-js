@@ -623,9 +623,23 @@ export class LineChart extends BaseChart<LineChartOptions> {
 
   addVector(timestamp: number, values: number[]): void {
     if (this.destroyed) return;
+    if (!Number.isFinite(timestamp)) {
+      throw new RangeError("Line streaming timestamp must be a finite number");
+    }
+    if (!Array.isArray(values)) {
+      throw new TypeError("addVector: values must be an array");
+    }
     if (this.expectedSeriesCount && values.length !== this.expectedSeriesCount) {
       throw new Error(
         `addVector: expected ${this.expectedSeriesCount} values, got ${values.length}`,
+      );
+    } else if (
+      this.expectedSeriesCount === 0 &&
+      this.pendingValues.length > 0 &&
+      values.length !== this.pendingValues[0].length
+    ) {
+      throw new Error(
+        `addVector: expected ${this.pendingValues[0].length} values, got ${values.length}`,
       );
     }
     // Snapshot the scalar sample so callers can reuse values before the batched flush.
@@ -685,6 +699,12 @@ export class LineChart extends BaseChart<LineChartOptions> {
 
   addVectors(timestamps: Float64Array, valuesBySeries: Float64Array[]): void {
     if (this.destroyed) return;
+    if (!(timestamps instanceof Float64Array)) {
+      throw new TypeError("addVectors: timestamps must be a Float64Array");
+    }
+    if (!Array.isArray(valuesBySeries)) {
+      throw new TypeError("addVectors: valuesBySeries must be an array of Float64Array");
+    }
     if (this.expectedSeriesCount > 0 && valuesBySeries.length !== this.expectedSeriesCount) {
       throw new Error(
         `addVectors: expected ${this.expectedSeriesCount} series, got ${valuesBySeries.length}`,
@@ -692,6 +712,9 @@ export class LineChart extends BaseChart<LineChartOptions> {
     }
     for (let seriesIndex = 0; seriesIndex < valuesBySeries.length; seriesIndex++) {
       const values = valuesBySeries[seriesIndex];
+      if (!(values instanceof Float64Array)) {
+        throw new TypeError(`addVectors: series ${seriesIndex} must be a Float64Array`);
+      }
       if (values.length !== timestamps.length) {
         throw new Error(
           `addVectors: timestamps contain ${timestamps.length} points, but series ${seriesIndex} contains ${values.length}`,
@@ -699,6 +722,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
       }
     }
     this.flushBatch();
+    if (timestamps.length === 0) return;
     this.postVectors(timestamps, valuesBySeries);
   }
 
@@ -737,6 +761,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
     assertValidLineData(data, false);
     this.flushViewportInputs();
     this.discardPendingBatch();
+    this.expectedSeriesCount = 0;
     const dataVersion = ++this.dataVersion;
     const transferList = collectTransferables([data.x, data.y]);
     this.worker.postMessage(
@@ -773,6 +798,7 @@ export class LineChart extends BaseChart<LineChartOptions> {
     assertValidLineData(data, true);
     this.flushViewportInputs();
     this.discardPendingBatch();
+    this.expectedSeriesCount = 0;
     const dataVersion = ++this.dataVersion;
     const transferList = collectTransferables([data.x, ...data.series]);
     this.worker.postMessage(

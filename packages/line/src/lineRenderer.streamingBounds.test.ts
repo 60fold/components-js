@@ -348,4 +348,85 @@ describe("line streaming retained-window bounds", () => {
       expect(large).toBeLessThanOrEqual(small + 4096);
     },
   );
+
+  it("preserves visible-series Y viewport across streaming appends when rendering is active and animated", () => {
+    const reportError = vi.fn();
+    const engine = createLineChartEngine(
+      { postMessage: () => {}, reportError },
+      { createCanvas: createCanvasStub },
+    );
+    engines.push(engine);
+    engine.handleMessage("init", {
+      canvas: createCanvasStub(),
+      dpr: 1,
+      config: {
+        animated: true,
+        minViewportRange: 1,
+        seriesOptions: [{}, {}],
+        rangeSelector: { visible: false },
+      },
+    });
+    engine.handleMessage("resize", { width: 800, height: 600, dpr: 1 });
+    engine.handleMessage("initRingBuffer", { maxPoints: 16, seriesCount: 2 });
+    engine.handleMessage("setSeriesVisible", { index: 1, visible: false });
+    engine.handleMessage("start", {});
+
+    append(
+      engine,
+      [
+        { x: 0, values: [10, 0] },
+        { x: 10, values: [20, 1000] },
+      ],
+      2,
+    );
+    vi.advanceTimersByTime(600);
+
+    const state = getLineEngineState(engine);
+    expect(state.dataBounds).toMatchObject({ yMin: 0, yMax: 1000 });
+    expect(state.viewport.yMax).toBeLessThan(50);
+
+    append(engine, [{ x: 20, values: [15, 950] }], 2);
+    expect(state.dataBounds).toMatchObject({ xMin: 0, xMax: 20, yMin: 0, yMax: 1000 });
+    expect(state.viewport.yMax).toBeLessThan(50);
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("immediately updates dataBounds on updateSeriesAppearance in both streaming and static modes", () => {
+    const harness = createHarness(8, [{ type: "line" }]);
+    harness.append([
+      { x: 0, values: [10] },
+      { x: 10, values: [20] },
+    ]);
+    expect(harness.state.dataBounds).toMatchObject({ yMin: 10, yMax: 20 });
+
+    harness.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { type: "bar", bar: { baseline: -200 } },
+    });
+    expect(harness.state.dataBounds).toMatchObject({ yMin: -200, yMax: 20 });
+
+    harness.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { bar: { baseline: 300 } },
+    });
+    expect(harness.state.dataBounds).toMatchObject({ yMin: 10, yMax: 300 });
+
+    harness.engine.handleMessage("setData", {
+      x: new Float64Array([0, 10]),
+      series: [new Float64Array([10, 20])],
+    });
+    expect(harness.state.dataBounds).toMatchObject({ yMin: 10, yMax: 300 });
+
+    harness.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { type: "line" },
+    });
+    expect(harness.state.dataBounds).toMatchObject({ yMin: 10, yMax: 20 });
+
+    harness.engine.handleMessage("updateSeriesAppearance", {
+      index: 0,
+      patch: { type: "bar", bar: { baseline: -150 } },
+    });
+    expect(harness.state.dataBounds).toMatchObject({ yMin: -150, yMax: 20 });
+  });
 });
