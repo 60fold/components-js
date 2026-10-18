@@ -1,6 +1,6 @@
 {
   "name": "sixtyfold-components",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance TypeScript components for AI, observability, industrial IoT, and financial markets.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,

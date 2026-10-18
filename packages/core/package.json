@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/core",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Shared Canvas2D chart runtime, data types, and interaction primitives for Sixtyfold Charts.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Different Planet - Unipessoal Lda.",

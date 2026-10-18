@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/ssr",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Server-side Canvas2D rendering for Sixtyfold line and stock charts.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Different Planet - Unipessoal Lda.",

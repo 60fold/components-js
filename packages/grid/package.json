@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/grid",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Worker-first Canvas2D data grid for large typed-column datasets.",
   "license": "PolyForm-Noncommercial-1.0.0",

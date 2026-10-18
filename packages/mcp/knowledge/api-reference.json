@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "sourceHash": "ef8b3e3fe0f629d79ded13de1c2960011d0ad5e5f09f71bb7c15db9340d2da75",
+  "sourceHash": "b6a0f16ebed312a7cb46272b8bcb3560b014930b2f8b5ddd18fcfe086e53c697",
   "packages": [
     {
       "name": "@sixtyfold/angular",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Angular adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -392,7 +392,7 @@
     },
     {
       "name": "@sixtyfold/core",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Shared Canvas2D chart runtime, data types, and interaction primitives for Sixtyfold Charts.",
       "entryPoints": [
         {
@@ -6489,7 +6489,7 @@
     },
     {
       "name": "@sixtyfold/line",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "High-performance Canvas2D line and multi-series charts for very large datasets.",
       "entryPoints": [
         {
@@ -8221,7 +8221,7 @@
     },
     {
       "name": "@sixtyfold/react",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "React adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -12314,7 +12314,7 @@
     },
     {
       "name": "@sixtyfold/solid",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "SolidJS adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -12529,7 +12529,7 @@
     },
     {
       "name": "@sixtyfold/ssr",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Server-side Canvas2D rendering for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -12987,6 +12987,20 @@
                   "signature": "rangeSelector: object"
                 },
                 {
+                  "name": "showLeftPriceMarker",
+                  "kind": "property",
+                  "optional": true,
+                  "description": "The show left price marker value.",
+                  "signature": "showLeftPriceMarker: boolean"
+                },
+                {
+                  "name": "showRightPriceMarker",
+                  "kind": "property",
+                  "optional": true,
+                  "description": "The show right price marker value.",
+                  "signature": "showRightPriceMarker: boolean"
+                },
+                {
                   "name": "showVolume",
                   "kind": "property",
                   "optional": true,
@@ -12999,6 +13013,13 @@
                   "optional": true,
                   "description": "The text direction value.",
                   "signature": "textDirection: \"ltr\" | \"rtl\" | \"auto\" | \"inherit\""
+                },
+                {
+                  "name": "timeScale",
+                  "kind": "property",
+                  "optional": true,
+                  "description": "The time scale value.",
+                  "signature": "timeScale: \"continuous\" | \"market\""
                 },
                 {
                   "name": "tooltip",
@@ -13057,7 +13078,7 @@
     },
     {
       "name": "@sixtyfold/stock",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "High-performance Canvas2D OHLCV, candlestick, and market analytics charts.",
       "entryPoints": [
         {
@@ -16213,7 +16234,7 @@
     },
     {
       "name": "@sixtyfold/svelte",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Svelte adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -16244,7 +16265,7 @@
     },
     {
       "name": "@sixtyfold/themes",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Immutable chart appearance presets for Sixtyfold Charts.",
       "entryPoints": [
         {
@@ -16378,7 +16399,7 @@
     },
     {
       "name": "@sixtyfold/vue",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Vue adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
