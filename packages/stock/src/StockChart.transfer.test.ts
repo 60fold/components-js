@@ -582,4 +582,78 @@ describe("StockChart streaming validation", () => {
     expect(() => chart.addCandle(7, 10, 12, 9, 11, 100)).toThrow("strictly increasing");
     chart.destroy();
   });
+
+  it("does not post an empty addCandles message when timestamps is empty", () => {
+    const frames = installAnimationFrameHarness();
+    const { chart, messages } = createChart();
+    chart.addCandle(1, 10, 12, 9, 11, 100);
+
+    const empty = candleBatch([]);
+    chart.addCandles(
+      empty.timestamp,
+      empty.open,
+      empty.high,
+      empty.low,
+      empty.close,
+      empty.volume,
+      { initialTimeRange: "ALL" },
+    );
+
+    const sent = messages.filter(({ message }) => message.type === "addCandles");
+    expect(sent).toHaveLength(1);
+    expect(Array.from(sent[0].message.timestamps)).toEqual([1]);
+
+    messages.length = 0;
+    appendBatch(chart, candleBatch([]));
+    expect(messages).toEqual([]);
+    frames.flush();
+    chart.destroy();
+  });
+
+  it("defers onTimeRangeChange inside batch() for setViewport and reset, and clamps market-time setViewport", () => {
+    const onTimeRangeChange = vi.fn();
+    const { chart, worker } = createChart({
+      timeScale: "market",
+      onTimeRangeChange,
+    });
+
+    worker.onmessage?.(
+      new MessageEvent("message", {
+        data: {
+          type: "viewportSync",
+          viewport: { xMin: 0, xMax: 100, yMin: 10, yMax: 20 },
+          dataBounds: { xMin: 0, xMax: 100, yMin: 10, yMax: 20 },
+          timeViewport: { xMin: 1_000, xMax: 5_000 },
+          timeDataBounds: { xMin: 1_000, xMax: 10_000 },
+          dataVersion: 0,
+        },
+      }),
+    );
+    onTimeRangeChange.mockClear();
+
+    chart.batch(() => {
+      // Reversed and out-of-bounds timestamps should be normalized and clamped to [1000, 10000]
+      chart.setViewport({ xMin: 12_000, xMax: 500 });
+      expect(onTimeRangeChange).not.toHaveBeenCalled();
+    });
+
+    expect(chart.getViewport()).toEqual({ xMin: 1_000, xMax: 10_000 });
+    expect(onTimeRangeChange).toHaveBeenCalledOnce();
+    expect(onTimeRangeChange).toHaveBeenCalledWith(null);
+
+    onTimeRangeChange.mockClear();
+    chart.batch(() => {
+      chart.setTimeRange("5D");
+      chart.setViewport({ xMin: 2_000, xMax: 4_000 });
+      chart.reset();
+      expect(onTimeRangeChange).not.toHaveBeenCalled();
+    });
+
+    expect(chart.getViewport()).toEqual({ xMin: 1_000, xMax: 10_000 });
+    expect(onTimeRangeChange).toHaveBeenCalledTimes(3);
+    expect(onTimeRangeChange).toHaveBeenNthCalledWith(1, "5D");
+    expect(onTimeRangeChange).toHaveBeenNthCalledWith(2, null);
+    expect(onTimeRangeChange).toHaveBeenNthCalledWith(3, "ALL");
+    chart.destroy();
+  });
 });

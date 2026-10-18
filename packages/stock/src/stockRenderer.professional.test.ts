@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HOUR } from "@sixtyfold/core/chart/chartConstants";
 import { createStockChartEngine } from "./stockRenderer.js";
 
@@ -387,5 +387,95 @@ describe("stock renderer professional layers", () => {
       .find((message) => message.type === "tooltipData")!
       .params.indicators.map((reading: { value: number }) => reading.value);
     expect(values).toEqual([4, 4]);
+  });
+
+  it("skips coarse LOD buckets at or before firstRawX when rendering range preview after ring wrap", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      setTimeout(() => callback(performance.now()), 16),
+    );
+    vi.stubGlobal("cancelAnimationFrame", (handle: ReturnType<typeof setTimeout>) =>
+      clearTimeout(handle),
+    );
+    try {
+      const previewColor = "#987654";
+      const pathXs: number[] = [];
+      let currentStroke = "";
+      const makeTrackingCanvas = (width = 800, height = 600) => {
+        const context = new Proxy({} as CanvasRenderingContext2D, {
+          get(_target, property) {
+            if (property === "measureText") return () => ({ width: 30 }) as TextMetrics;
+            if (property === "createLinearGradient") return () => ({ addColorStop: () => {} });
+            if (property === "createPattern") return () => null;
+            if (property === "moveTo" || property === "lineTo") {
+              return (x: number) => {
+                if (currentStroke === previewColor) pathXs.push(x);
+              };
+            }
+            return () => {};
+          },
+          set(_target, property, value) {
+            if (property === "strokeStyle") currentStroke = String(value);
+            return true;
+          },
+        });
+        return { width, height, getContext: () => context };
+      };
+
+      const engine = createStockChartEngine(
+        { postMessage: () => {} },
+        {
+          ssr: false,
+          createCanvas: (w, h) => makeTrackingCanvas(w, h),
+        },
+      );
+      engine.handleMessage("init", {
+        canvas: makeTrackingCanvas(800, 600),
+        dpr: 1,
+        config: {
+          animated: false,
+          previewLineColor: previewColor,
+          rangeSelector: { visible: true, height: 48 },
+        },
+      });
+      engine.handleMessage("resize", { width: 800, height: 600, dpr: 1 });
+      engine.handleMessage("initRingBuffer", { maxCandles: 120 });
+
+      const initial = makeCandles(120, HOUR);
+      engine.handleMessage("addCandles", {
+        timestamps: initial.timestamp,
+        opens: initial.open,
+        highs: initial.high,
+        lows: initial.low,
+        closes: initial.close,
+        volumes: initial.volume,
+        initialTimeRange: "ALL",
+      });
+      vi.advanceTimersByTime(300);
+
+      // Append 24 more hourly candles to wrap the ring buffer by 1 day while the coarse 1M/1W LOD
+      // snapshot still starts at the evicted firstRawX; render before the 500ms LOD rebuild fires.
+      const next = makeCandles(24, 121 * HOUR);
+      pathXs.length = 0;
+
+      engine.handleMessage("addCandles", {
+        timestamps: next.timestamp,
+        opens: next.open,
+        highs: next.high,
+        lows: next.low,
+        closes: next.close,
+        volumes: next.volume,
+      });
+      vi.advanceTimersByTime(20);
+
+      expect(pathXs.length).toBeGreaterThanOrEqual(2);
+      for (let i = 1; i < pathXs.length; i++) {
+        expect(pathXs[i]).toBeGreaterThan(pathXs[i - 1]);
+      }
+      engine.handleMessage("stop", {});
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 });

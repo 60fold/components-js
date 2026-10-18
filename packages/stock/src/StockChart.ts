@@ -608,7 +608,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
       this.timeViewport = { ...this.timeDataBounds };
     }
     this.lastResetTime = performance.now();
-    this.emitTimeRangeChange("ALL", "reset", true);
+    this.deferInBatch(() => this.emitTimeRangeChange("ALL", "reset", true));
   }
 
   protected onViewportManualChange(): void {
@@ -778,8 +778,9 @@ export class StockChart extends BaseChart<StockChartOptions> {
       this.lastCandleTimestamp,
     );
     this.flushViewportInputs();
-    const transferList = collectTransferables([timestamps, opens, highs, lows, closes, volumes]);
     this.flushBatch();
+    if (timestamps.length === 0) return;
+    const transferList = collectTransferables([timestamps, opens, highs, lows, closes, volumes]);
     this.sendCandles(timestamps, opens, highs, lows, closes, volumes, options, transferList);
     this.lastCandleTimestamp = lastTimestamp;
   }
@@ -937,20 +938,33 @@ export class StockChart extends BaseChart<StockChartOptions> {
     if (this.destroyed) return;
     if (this.timeScale !== "market") {
       super.setViewport(viewport, options);
-      this.emitTimeRangeChange(null, "api");
+      this.deferInBatch(() => this.emitTimeRangeChange(null, "api"));
       return;
     }
-    const xMin = viewport.xMin ?? this.timeViewport.xMin;
-    const xMax = viewport.xMax ?? this.timeViewport.xMax;
+    this.flushViewportInputs();
+    const resolvedXMin = viewport.xMin ?? this.timeViewport.xMin;
+    const resolvedXMax = viewport.xMax ?? this.timeViewport.xMax;
+    const db = this.timeDataBounds;
+    const clampedMin = this.hasDataBounds
+      ? Math.max(db.xMin, Math.min(db.xMax, resolvedXMin))
+      : resolvedXMin;
+    const clampedMax = this.hasDataBounds
+      ? Math.max(db.xMin, Math.min(db.xMax, resolvedXMax))
+      : resolvedXMax;
+    const lo = Math.min(clampedMin, clampedMax);
+    const hi = Math.max(clampedMin, clampedMax);
+    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+      this.timeViewport = { xMin: lo, xMax: hi };
+    }
     this.postMessageBatched({
       type:
         (options?.animated ?? this.animated)
           ? "setTimeViewportRangeAnimated"
           : "setTimeViewportRange",
-      xMin,
-      xMax,
+      xMin: lo,
+      xMax: hi,
     });
-    this.emitTimeRangeChange(null, "api");
+    this.deferInBatch(() => this.emitTimeRangeChange(null, "api"));
   }
 
   override reset(options?: { animated?: boolean }): void {

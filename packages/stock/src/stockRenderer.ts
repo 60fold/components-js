@@ -834,6 +834,12 @@ export function createStockChartEngine(
     if (!dataTimestamp || !ringBufferMode) return;
 
     const count = timestamps.length;
+    if (count === 0) {
+      if (!deferLODRebuild && deferInitialRenderUntilLODReady && dataLength === 0) {
+        deferInitialRenderUntilLODReady = false;
+      }
+      return;
+    }
     const previousTimestamp = dataLength > 0 ? getRawTimestamp(dataLength - 1) : Number.NaN;
     const previousRawInterval = rawInterval;
     // Resolve one cadence for the entire batch, including its join to the
@@ -897,7 +903,10 @@ export function createStockChartEngine(
     updateRawLODLevel();
 
     if (!deferLODRebuild) {
-      if (dataLength > 1000 && (!hasBuiltAggregations() || previousDataLength === 0)) {
+      if (
+        deferInitialRenderUntilLODReady ||
+        (dataLength > 1000 && (!hasBuiltAggregations() || previousDataLength === 0))
+      ) {
         buildLODLevels();
       } else {
         scheduleLODRebuild();
@@ -1076,14 +1085,29 @@ export function createStockChartEngine(
     // The renderer still caps the painted body at 80% of the available slot.
     const targetSpacing = state.chartWidth < 360 ? 4 : 6;
     const targetCandles = state.chartWidth / targetSpacing;
+    const visibleMinX = Math.max(state.viewport.xMin, state.dataBounds.xMin);
+    const visibleMaxX = Math.min(state.viewport.xMax, state.dataBounds.xMax);
+    const visibleSpan = visibleMaxX - visibleMinX;
 
     for (let i = 0; i < lodLevels.length; i++) {
+      const level = lodLevels[i];
+      if (!level || (i > 0 && level.length === 0)) continue;
+      let coverageRatio = 1;
+      if (i > 0 && visibleSpan > 0) {
+        const snapshotEndTimestamp = levelAccess.getSourceEndTimestamp(level, level.length - 1);
+        const snapshotEndX =
+          timeScale === "market" ? timestampToMarketX(snapshotEndTimestamp) : snapshotEndTimestamp;
+        const coveredSpan = Math.max(0, Math.min(visibleMaxX, snapshotEndX) - visibleMinX);
+        coverageRatio = coveredSpan / visibleSpan;
+        if (coverageRatio < 0.8) return 0;
+      }
       const { startIdx, endIdx } = getVisibleCandles(i);
       const visibleCandles = Math.max(0, endIdx - startIdx + 1);
-      if (visibleCandles <= targetCandles) return i;
+      if (visibleCandles / coverageRatio <= targetCandles) return i;
     }
 
-    return lodLevels.length - 1;
+    const coarsest = lodLevels[lodLevels.length - 1];
+    return coarsest && coarsest.length > 0 ? lodLevels.length - 1 : 0;
   }
 
   function getVisibleCandles(lodIdx: number): {
@@ -1909,6 +1933,15 @@ export function createStockChartEngine(
   function nearestLevelIndex(level: AggregatedLevel, timestamp: number): number {
     if (level.length === 0) return -1;
     let index = levelAccess.binarySearchTimestampLeft(level, timestamp, 0, level.length - 1);
+    if (
+      index > 0 &&
+      !level.rawSource &&
+      level.sourceEndTimestamp &&
+      timestamp >= levelAccess.getTimestamp(level, index - 1) &&
+      timestamp <= level.sourceEndTimestamp[index - 1]
+    ) {
+      return index - 1;
+    }
     if (index > 0) {
       const currentDistance = Math.abs(levelAccess.getTimestamp(level, index) - timestamp);
       const previousDistance = Math.abs(levelAccess.getTimestamp(level, index - 1) - timestamp);
@@ -2042,10 +2075,20 @@ export function createStockChartEngine(
 
     let nearestIdx = levelAccess.binarySearchLeft(level, dataX, 0, level.length - 1);
     if (nearestIdx > 0) {
-      const distCurrent = Math.abs(levelAccess.getX(level, nearestIdx) - dataX);
-      const distPrev = Math.abs(levelAccess.getX(level, nearestIdx - 1) - dataX);
-      if (distPrev < distCurrent) {
+      if (
+        !level.rawSource &&
+        timeScale !== "market" &&
+        level.sourceEndTimestamp &&
+        dataX >= levelAccess.getTimestamp(level, nearestIdx - 1) &&
+        dataX <= level.sourceEndTimestamp[nearestIdx - 1]
+      ) {
         nearestIdx = nearestIdx - 1;
+      } else {
+        const distCurrent = Math.abs(levelAccess.getX(level, nearestIdx) - dataX);
+        const distPrev = Math.abs(levelAccess.getX(level, nearestIdx - 1) - dataX);
+        if (distPrev < distCurrent) {
+          nearestIdx = nearestIdx - 1;
+        }
       }
     }
 
@@ -2257,7 +2300,9 @@ export function createStockChartEngine(
     appendPoint(firstRawX, firstRawClose);
 
     for (let i = 0; i < level.length; i++) {
-      appendPoint(levelAccess.getX(level, i), levelAccess.getClose(level, i));
+      const x = levelAccess.getX(level, i);
+      if (x <= firstRawX) continue;
+      appendPoint(x, levelAccess.getClose(level, i));
     }
 
     const lastRawIndex = dataLength - 1;
@@ -2587,7 +2632,7 @@ export function createStockChartEngine(
           [data.opens, data.highs, data.lows, data.closes, data.volumes],
           dataLength > 0 ? getRawTimestamp(dataLength - 1) : null,
         );
-        if (data.initialTimeRange && dataLength === 0) {
+        if (data.initialTimeRange && dataLength === 0 && data.timestamps.length > 0) {
           deferInitialRenderUntilLODReady = true;
         }
         addCandles(data.timestamps, data.opens, data.highs, data.lows, data.closes, data.volumes);
@@ -2610,7 +2655,12 @@ export function createStockChartEngine(
             lastTimestamp,
           );
         }
-        if (dataLength === 0) deferInitialRenderUntilLODReady = true;
+        if (
+          dataLength === 0 &&
+          data.batches.some((batch: Record<string, any>) => batch.timestamp.length > 0)
+        ) {
+          deferInitialRenderUntilLODReady = true;
+        }
         for (let index = 0; index < data.batches.length; index++) {
           const batch = data.batches[index];
           addCandles(

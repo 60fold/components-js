@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getStockEngineState } from "@test/support/engineState";
 import { createStockChartEngine, type StockChartEngine } from "./stockRenderer.js";
 import * as aggregation from "./engine/aggregation.js";
 import { StockLevelAccess, type AggregatedLevel } from "./engine/levels.js";
@@ -347,5 +348,108 @@ describe("stock renderer streaming LOD lifecycle", () => {
     expect(harness.drawImage).not.toHaveBeenCalled();
     expect(harness.reportError).not.toHaveBeenCalled();
     expect(levels).toEqual([]);
+  });
+
+  it("does not leave deferInitialRenderUntilLODReady stuck when empty addCandles or addCandleBatches is sent with initialTimeRange", () => {
+    const harness = createHarness();
+    const empty = candles(0, 0);
+    harness.engine.handleMessage("addCandles", {
+      timestamps: empty.timestamp,
+      opens: empty.open,
+      highs: empty.high,
+      lows: empty.low,
+      closes: empty.close,
+      volumes: empty.volume,
+      initialTimeRange: "ALL",
+    });
+    harness.engine.handleMessage("addCandleBatches", {
+      batches: [empty],
+      initialTimeRange: "ALL",
+    });
+
+    // Subsequent non-empty append without initialTimeRange renders normally
+    append(harness.engine, 0, 5, false);
+    vi.advanceTimersByTime(32);
+    expect(harness.drawImage).toHaveBeenCalled();
+  });
+
+  it("falls back to the live raw level when newly appended candles reduce coarse LOD coverage below 80%", () => {
+    const harness = createHarness(4096);
+    append(harness.engine, 0, 1200, true);
+    vi.advanceTimersByTime(200);
+    expect(harness.stats().some((stats) => stats.lodReady)).toBe(true);
+
+    // Append 1000 new candles (indices 1200..2199). Before the 500ms LOD rebuild debounce fires,
+    // pan the viewport to [1100m, 2199m] where the old coarse snapshot [0..1199m] covers < 10% (< 80%).
+    append(harness.engine, 1200, 1000, false);
+    harness.messages.length = 0;
+    harness.engine.handleMessage("setViewportRange", {
+      xMin: START + 1100 * MINUTE,
+      xMax: START + 2199 * MINUTE,
+    });
+    vi.advanceTimersByTime(32);
+
+    const latestStats = harness.stats().at(-1);
+    expect(latestStats).toBeDefined();
+    // Should render the ~1100 visible raw candles rather than only the ~100 candles in the stale snapshot
+    expect(latestStats!.renderedCandles).toBeGreaterThan(500);
+  });
+
+  it("selects the containing aggregated bucket in nearestLevelIndex when a marker timestamp falls inside [startTimestamp, sourceEndTimestamp]", () => {
+    const fillTextCalls: Array<{ text: string; x: number; y: number }> = [];
+    const engine = createStockChartEngine(
+      { postMessage: () => {} },
+      {
+        ssr: true,
+        createCanvas: (width = 800, height = 600) => {
+          const context = new Proxy({} as CanvasRenderingContext2D, {
+            get(_target, property) {
+              if (property === "measureText") return () => ({ width: 30 }) as TextMetrics;
+              if (property === "createLinearGradient") return () => ({ addColorStop: () => {} });
+              if (property === "createPattern") return () => null;
+              if (property === "fillText") {
+                return (text: string, x: number, y: number) => fillTextCalls.push({ text, x, y });
+              }
+              return () => {};
+            },
+            set: () => true,
+          });
+          return { width, height, getContext: () => context };
+        },
+      },
+    );
+    engines.push(engine);
+
+    // 500 1-minute candles cause selectLODLevel() to pick the 5m aggregated level (100 buckets <= 110 target).
+    // Bucket 0 covers [START + 0m .. START + 4m]; Bucket 1 starts at START + 5m.
+    // A marker at START + 3.5m is past the midpoint (2.5m) between 0m and 5m, but inside Bucket 0's [0m, 4m] span.
+    engine.handleMessage("init", {
+      canvas: createCanvasStub(800, 600),
+      dpr: 1,
+      config: {
+        animated: false,
+        showVolume: false,
+        rangeSelector: { visible: false },
+        yDomain: { min: 0, max: 200 },
+        markers: [
+          {
+            timestamp: START + 3.5 * MINUTE,
+            position: "above",
+            label: "BUCKET0_MARKER",
+          },
+        ],
+      },
+    });
+    engine.handleMessage("resize", { width: 800, height: 600, dpr: 1 });
+
+    const count = 500;
+    const data = candles(0, count);
+    engine.handleMessage("setData", data);
+
+    const state = getStockEngineState(engine);
+    const markerCall = fillTextCalls.find((c) => c.text === "BUCKET0_MARKER");
+    expect(markerCall).toBeDefined();
+    const expectedBucket0X = state.padding.left;
+    expect(markerCall!.x).toBeCloseTo(expectedBucket0X, 5);
   });
 });
