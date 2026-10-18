@@ -187,4 +187,20 @@ describe.each(["line", "stock"] as const)("React %s initial prop recovery", (kin
     expect(onReady).not.toHaveBeenCalled();
     expect(chart.callsTo("updateAppearance")).toHaveLength(0);
   });
+
+  it("reports synchronous initial prop and onReady errors in the initialization continuation without an extra microtask hop", async () => {
+    const onError = vi.fn();
+    const failure = new Error("onReady threw synchronously");
+    const onReady = vi.fn(() => {
+      throw failure;
+    });
+    await render(<Chart onError={onError} onReady={onReady} />);
+    const chart = lastChart(ChartType);
+
+    chart.becomeReady();
+    await Promise.resolve();
+
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+  });
 });

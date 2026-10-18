@@ -309,6 +309,67 @@ describe.each(["line", "stock"] as const)("React Activity %s chart lifecycle", (
     expect(nextOnError).not.toHaveBeenCalled();
   });
 
+  it("reports a failing prop batch only once when revealed with updated props", async () => {
+    const initialData = createData(kind);
+    const nextData = createData(kind);
+    const onError = vi.fn();
+    const onReady = vi.fn();
+    await render(activity("visible", { data: initialData, onError, onReady }));
+    const chart = getChart();
+    await act(async () => chart.becomeReady());
+    await render(
+      activity("hidden", {
+        data: nextData,
+        appearance: { grid: { color: "#222222" } },
+        onError,
+        onReady,
+      }),
+    );
+    const failure = new Error("reveal appearance rejected");
+    vi.spyOn(chart, "updateAppearance").mockImplementation(() => {
+      throw failure;
+    });
+
+    await render(
+      activity("visible", {
+        data: nextData,
+        appearance: { grid: { color: "#222222" } },
+        onError,
+        onReady,
+      }),
+    );
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+  });
+
+  it("drains pending hidden errors before installing props or notifying readiness on reveal", async () => {
+    const data = createData(kind);
+    const events: string[] = [];
+    const onError = vi.fn(() => {
+      events.push("onError");
+    });
+    const onReady = vi.fn(() => {
+      events.push("onReady");
+    });
+    await render(activity("visible", { onError, onReady }));
+    const chart = getChart();
+    const origSetData = chart.setData.bind(chart);
+    vi.spyOn(chart, "setData").mockImplementation((...args) => {
+      events.push("setData");
+      return origSetData(...args);
+    });
+    await render(activity("hidden", { data, onError, onReady }));
+    act(() => {
+      chart.failOverlay(new Error("queued while hidden"));
+      chart.becomeReady();
+    });
+    expect(events).toEqual([]);
+
+    await render(activity("visible", { data, onError, onReady }));
+
+    expect(events).toEqual(["onError", "setData", "onReady"]);
+  });
+
   it("does not construct an initially hidden chart until its first reveal", async () => {
     const data = createData(kind);
     const onReady = vi.fn();

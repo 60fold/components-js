@@ -178,19 +178,22 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
 
     useEffect(() => {
       const lifetime = lifetimeRef.current;
-      lifetime.active = true;
       let disconnected = false;
 
       // Deferring construction by one microtask prevents React Strict Mode's
       // development-only setup/cleanup probe from installing data twice.
       queueMicrotask(() => {
         if (disconnected || lifetime.disposed || !canvasRef.current) return;
+        lifetime.active = true;
         while (lifetime.pendingErrors.length > 0) {
           const error = lifetime.pendingErrors.shift();
           latestRef.current.onError?.(error);
           // Error handlers may synchronously hide or unmount the host. Leave
           // any remaining errors queued for its next real reconnection.
-          if (disconnected || lifetime.disposed || !canvasRef.current) return;
+          if (disconnected || !lifetime.active || lifetime.disposed || !canvasRef.current) {
+            lifetime.active = false;
+            return;
+          }
         }
         let chart = lifetime.chart;
         if (!chart) {
@@ -219,7 +222,11 @@ export const SixtyfoldLineChart = forwardRef<LineChartHandle, SixtyfoldLineChart
             .then(() => {
               if (lifetime.disposed || lifetime.chart !== chart || lifetime.rendererFailed) return;
               lifetime.ready = true;
-              connectReadyChart();
+              try {
+                connectReadyChart();
+              } catch (error) {
+                reportError(error);
+              }
             })
             .catch((error) => {
               if (error !== reportedRendererError) reportError(error);
