@@ -32,14 +32,25 @@ object for each update. `ref` and `reactive` deep-proxy the surrounding object
 graph, which costs more than it buys for bulk data the renderer only reads
 once.
 
-Renderer stats are collected only while a `stats` listener is bound. Leaving
+Renderer stats are collected only while a `stats` listener can receive them.
+A sole `@stats.once` listener stops collection after its first event; ordinary
+listeners keep collection enabled. Adding or removing listeners in a reactive
+array also updates collection; a consumed `.once` listener remains consumed for
+the component lifetime. Leaving
 `viewportAnimated` unset inherits the chart's own `animated` option; setting it
 overrides that per update.
 
-The `error` event reports construction errors, renderer startup/runtime
-failures, and overlay resolution or renderer-delivery failures. Renderer and
+The `error` event reports construction and reactive prop-installation errors,
+renderer startup/runtime failures, and overlay resolution or renderer-delivery
+failures. Renderer and
 overlay failures can be narrowed with `ChartRendererError` and
 `ChartOverlayError` from the installed chart engine.
+
+`ready` fires once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. It does not wait for a painted
+frame. A rejected prop installation reports `error`; supply corrected props
+to retry without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
 
 ## Licensing
 

@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/stock",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance Canvas2D OHLCV, candlestick, and market analytics charts.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Different Planet - Unipessoal Lda.",

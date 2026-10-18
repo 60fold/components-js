@@ -36,8 +36,9 @@ Renderer stats are collected only while something subscribes to the `stats`
 output. Leaving `viewportAnimated` unset inherits the chart's own `animated`
 option; setting it overrides that per update.
 
-`chartError` reports construction errors, renderer startup/runtime failures,
-and overlay resolution or renderer-delivery failures. Renderer and overlay
+`chartError` reports construction and reactive prop-installation errors,
+renderer startup/runtime failures, and overlay resolution or renderer-delivery
+failures. Renderer and overlay
 failures can be narrowed with `ChartRendererError` and `ChartOverlayError` from
 the installed chart engine.
 
@@ -51,6 +52,12 @@ application build's `assets` array:
   { "glob": "**/*", "input": "node_modules/@sixtyfold/stock/dist/assets", "output": "assets" }
 ]
 ```
+
+`chartReady` fires once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. It does not wait for a painted
+frame. A rejected prop installation reports `chartError`; supply corrected props
+to retry without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
 
 ## Licensing
 

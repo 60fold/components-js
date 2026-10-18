@@ -716,9 +716,35 @@ export function generateIntegrationForVersion(
     "Typed-array buffers are transferred in worker mode. Clone them first if the application must retain a readable copy.",
     "Framework adapters destroy their chart automatically. Vanilla integrations must call destroy() when the view is permanently removed.",
   ];
+  if (framework !== "vanilla") {
+    notes.push(
+      "Readiness fires once after renderer initialization and the first successful batch of data, appearance, and viewport props. It does not wait for a painted frame.",
+      "Rejected prop installations report the adapter error callback/event; corrected props can recover without remounting and successfully installed data is not transferred again. Renderer failures are terminal and require a remount.",
+    );
+  }
+  if (framework === "react") {
+    notes.push(
+      "React 19.2+ Activity retains the chart and worker while hidden. The forwarded ref is disconnected and a captured handle's .chart is null; prop updates and readiness/error notifications wait for reveal, while stats and series-visibility callbacks are disconnected. Permanent unmount destroys the retained chart. React 18 and earlier React 19 releases dispose on unmount, including hidden Suspense trees.",
+    );
+  }
+  if (framework === "vue") {
+    notes.push(
+      "Stats collection follows listener presence, including reactive listener-array mutations. A sole @stats.once listener disables collection after its event; regular listeners keep collection enabled.",
+    );
+  }
+  if (framework === "angular") {
+    notes.push(
+      "Stats collection follows active stats output subscriptions, including programmatic subscribe/unsubscribe changes; statsIntervalMs is the minimum emission interval.",
+    );
+  }
   if (input.component === "stock") {
     notes.push(
       "StockChart does not insert time-range controls. Render any buttons or menus in the host application, call setTimeRange() for exported presets, or setViewport() for arbitrary timestamp intervals.",
+      "Streaming appends require finite, strictly increasing timestamps across calls and chunks, and six equally sized OHLCV columns. Invalid stock input is rejected before transferring buffers; duplicate timestamps are not in-place candle updates. Static setData can normalize ascending or descending monotonic history.",
+    );
+  } else {
+    notes.push(
+      "Line streaming requires finite timestamps and one value per configured series. addVectors validates aligned Float64Array columns before flushing queued scalar samples or transferring buffers. addVector snapshots its values, so callers may reuse the input array.",
     );
   }
   if (dataShape) {

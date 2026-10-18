@@ -22,7 +22,7 @@ import {
   type StockChartOptions,
   type StockChartStats,
 } from "@sixtyfold/stock";
-import { hasViewport } from "./shared";
+import { createStatsEmitter, hasViewport } from "./shared";
 
 export type CanvasAttributes = Record<string, string | number | boolean | null | undefined>;
 
@@ -84,13 +84,24 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
    *  class, style, and bitmap-size attributes remain controlled above. */
   @Input() canvasAttributes?: CanvasAttributes;
 
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   @Output() readonly chartReady = new EventEmitter<StockChart>();
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   @Output() readonly chartError = new EventEmitter<unknown>();
-  @Output() readonly stats = new EventEmitter<StockChartStats>();
+  @Output() readonly stats = createStatsEmitter<StockChartStats>(() => this.syncStatsCallback());
 
   chart: StockChart | null = null;
   private ready = false;
+  private readyNotified = false;
+  private rendererFailed = false;
   private destroyed = false;
   private appliedData?: OHLCVData;
   private appliedAppearance?: DeepPartial<StockAppearanceOptions>;
@@ -124,9 +135,9 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
 
   ngOnChanges(_changes: SimpleChanges): void {
     this.syncCanvasAttributes();
+    this.syncStatsCallback();
     if (!this.ready) return;
     this.applyReactiveInputs();
-    this.syncStatsCallback();
   }
 
   private syncCanvasAttributes(): void {
@@ -159,6 +170,7 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
     }
     this.chart = chart;
     chart.setRendererErrorCallback((error) => {
+      this.rendererFailed = true;
       this.reportedRendererError = error;
       if (!this.destroyed) this.chartError.emit(error);
     });
@@ -172,7 +184,6 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
         if (this.destroyed || this.chart !== chart) return;
         this.ready = true;
         this.applyReactiveInputs();
-        this.chartReady.emit(chart);
       })
       .catch((error) => {
         if (!this.destroyed && error !== this.reportedRendererError) {
@@ -185,14 +196,21 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
    *  subscribes to the `stats` output, and is re-sent only when it changes. */
   private syncStatsCallback(): void {
     const chart = this.chart;
-    if (!chart) return;
-    const enabled = this.stats.observed;
+    if (!chart || this.destroyed) return;
+    const enabled = !this.stats.closed && !this.stats.isStopped && this.stats.observed;
     if (enabled === this.statsEnabled && this.statsIntervalMs === this.statsInterval) return;
     this.statsEnabled = enabled;
     this.statsInterval = this.statsIntervalMs;
-    chart.setStatsCallback(enabled ? (value) => this.stats.emit(value) : null, {
-      intervalMs: this.statsIntervalMs,
-    });
+    chart.setStatsCallback(
+      enabled
+        ? (value) => {
+            if (!this.destroyed) this.stats.emit(value);
+          }
+        : null,
+      {
+        intervalMs: this.statsIntervalMs,
+      },
+    );
   }
 
   /** Installs every reactive input in a single engine update. Each dataset
@@ -200,21 +218,34 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
    *  identity tracking also prevents duplicate installs in main-thread mode. */
   private applyReactiveInputs(): void {
     const chart = this.chart;
-    if (!chart) return;
-    chart.batch(() => {
-      if (this.data && this.data !== this.appliedData) {
-        chart.setData(this.data);
-        this.appliedData = this.data;
+    if (!chart || !this.ready || this.destroyed || this.rendererFailed) return;
+    try {
+      chart.batch(() => {
+        if (this.data && this.data !== this.appliedData) {
+          chart.setData(this.data);
+          this.appliedData = this.data;
+        }
+        if (this.appearance && this.appearance !== this.appliedAppearance) {
+          chart.updateAppearance(this.appearance);
+          this.appliedAppearance = this.appearance;
+        }
+        if (hasViewport(this.viewport) && this.viewport !== this.appliedViewport) {
+          chart.setViewport(this.viewport, { animated: this.viewportAnimated });
+          this.appliedViewport = this.viewport;
+        }
+      });
+    } catch (error) {
+      if (!this.destroyed && error !== this.reportedRendererError) this.chartError.emit(error);
+      return;
+    }
+    if (!this.destroyed && !this.rendererFailed && this.chart === chart && !this.readyNotified) {
+      this.readyNotified = true;
+      try {
+        this.chartReady.emit(chart);
+      } catch (error) {
+        if (!this.destroyed) this.chartError.emit(error);
       }
-      if (this.appearance && this.appearance !== this.appliedAppearance) {
-        chart.updateAppearance(this.appearance);
-        this.appliedAppearance = this.appearance;
-      }
-      if (hasViewport(this.viewport) && this.viewport !== this.appliedViewport) {
-        chart.setViewport(this.viewport, { animated: this.viewportAnimated });
-        this.appliedViewport = this.viewport;
-      }
-    });
+    }
   }
 
   ngOnDestroy(): void {

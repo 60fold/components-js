@@ -62,11 +62,14 @@ export interface SSRLineChartOptions extends SSRBaseChartOptions {
 
 /** Stock-chart options supported by the SSR renderer. */
 export interface SSRStockChartOptions extends SSRBaseChartOptions {
+  timeScale?: "continuous" | "market";
   showVolume?: boolean;
   volumeOpacity?: number;
   volumeHeightRatio?: number;
   volumeColors?: object;
   crosshairMarkerColor?: string;
+  showLeftPriceMarker?: boolean;
+  showRightPriceMarker?: boolean;
   candleStyle?: "filled" | "hollow" | "ohlc";
   candleColors?: object;
   candleStrokeWidth?: number;
@@ -149,6 +152,7 @@ export function renderLineChartSSR(
       overlay: options.overlay,
       interpolation: options.interpolation ?? "linear",
       seriesOptions: options.series,
+      marker: options.marker,
       legend: options.legend,
       lod: {
         mode: "adaptive",
@@ -191,6 +195,28 @@ export function renderStockChartSSR(
     ssr: true,
   });
 
+  const axisOption = options.axis as Record<string, any> | undefined;
+  const resolvedAxis =
+    options.showLeftPriceMarker !== undefined || options.showRightPriceMarker !== undefined
+      ? {
+          ...axisOption,
+          left: {
+            ...axisOption?.left,
+            cursorLabel: {
+              ...axisOption?.left?.cursorLabel,
+              visible: axisOption?.left?.cursorLabel?.visible ?? options.showLeftPriceMarker,
+            },
+          },
+          right: {
+            ...axisOption?.right,
+            cursorLabel: {
+              ...axisOption?.right?.cursorLabel,
+              visible: axisOption?.right?.cursorLabel?.visible ?? options.showRightPriceMarker,
+            },
+          },
+        }
+      : options.axis;
+
   engine.handleMessage("init", {
     canvas: canvas as unknown as CanvasLike,
     dpr,
@@ -199,8 +225,9 @@ export function renderStockChartSSR(
       animated: options.animated ?? false,
       minViewportRange: options.minViewportRange,
       yDomain: options.yDomain,
+      timeScale: options.timeScale ?? "continuous",
       grid: options.grid,
-      axis: options.axis,
+      axis: resolvedAxis,
       chartBackground: options.chartBackground,
       textDirection: options.textDirection,
       rangeSelector: options.rangeSelector,

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["vite/client"],
+    "paths": {
+      "@grid-benchmark/active-view": ["packages/grid/src/view/activeView.ts"],
+      "@grid-benchmark/store": ["packages/grid/src/data/store.ts"],
+      "@grid-benchmark/types": ["packages/grid/src/types.ts"],
+      "@grid-summary/engine": ["packages/grid/src/summary/summaryHierarchy.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1831,6 +1831,45 @@ describe("Runtime Control API", () => {
   });
 
   describe("updateAppearance()", () => {
+    it("ignores prototype-changing keys in appearance state and renderer messages", () => {
+      const { chart, messages } = setup({ grid: { lineWidth: 2 } });
+      const patch = JSON.parse(`{
+        "__proto__": { "__sixtyfoldAppearancePolluted": true },
+        "constructor": { "prototype": { "__sixtyfoldAppearancePolluted": true } },
+        "prototype": { "__sixtyfoldAppearancePolluted": true },
+        "grid": {
+          "color": "#123456",
+          "__proto__": { "__sixtyfoldAppearancePolluted": true },
+          "constructor": {},
+          "prototype": {}
+        }
+      }`);
+
+      try {
+        chart.updateAppearance(patch);
+
+        expect(Object.hasOwn(Object.prototype, "__sixtyfoldAppearancePolluted")).toBe(false);
+        expect(chart.getOptions().grid).toMatchObject({ color: "#123456", lineWidth: 2 });
+        const message = messages.find((entry) => entry.type === "updateAppearance");
+        expect(message).toBeDefined();
+        for (const value of [
+          chart.getShadow(),
+          chart.getShadow().grid,
+          message!.patch,
+          message!.patch.grid,
+        ]) {
+          expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+          for (const key of ["__proto__", "constructor", "prototype"]) {
+            expect(Object.hasOwn(value, key)).toBe(false);
+          }
+        }
+        expect(Object.hasOwn(patch, "__proto__")).toBe(true);
+      } finally {
+        Reflect.deleteProperty(Object.prototype, "__sixtyfoldAppearancePolluted");
+        chart.destroy();
+      }
+    });
+
     it("snapshots recursively frozen appearance patches", () => {
       const { chart, messages } = setup();
       const vertical = Object.freeze({ color: "#abcdef" });
@@ -1923,6 +1962,38 @@ describe("Runtime Control API", () => {
   });
 
   describe("setLabels() shadow update", () => {
+    it("ignores prototype-changing keys in labels and their renderer snapshots", () => {
+      const { chart, messages } = setup({ labels: { top: { text: "Original" } } });
+      const labels = JSON.parse(`{
+        "__proto__": { "__sixtyfoldLabelsPolluted": true },
+        "constructor": { "prototype": { "__sixtyfoldLabelsPolluted": true } },
+        "prototype": {},
+        "top": {
+          "text": "Updated",
+          "font": { "size": 18, "__proto__": { "__sixtyfoldLabelsPolluted": true } }
+        }
+      }`);
+
+      try {
+        chart.setLabels(labels);
+
+        expect(Object.hasOwn(Object.prototype, "__sixtyfoldLabelsPolluted")).toBe(false);
+        expect(chart.getOptions().labels?.top?.text).toBe("Updated");
+        const message = messages.find((entry) => entry.type === "setLabels");
+        expect(message).toBeDefined();
+        for (const value of [chart.getShadow().labels, message!.labels, message!.labels.top.font]) {
+          expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+          for (const key of ["__proto__", "constructor", "prototype"]) {
+            expect(Object.hasOwn(value, key)).toBe(false);
+          }
+        }
+        expect(Object.hasOwn(labels, "__proto__")).toBe(true);
+      } finally {
+        Reflect.deleteProperty(Object.prototype, "__sixtyfoldLabelsPolluted");
+        chart.destroy();
+      }
+    });
+
     it("updates shadow state so getOptions reflects new labels", () => {
       const { chart } = setup({
         labels: { top: { text: "Original", font: { size: 14 } } },

@@ -69,6 +69,26 @@ chart with `yDomain: { min: 0, max: 100 }`. Either edge may be omitted to keep
 that side auto-scaled; omitting `yDomain` preserves the default visible-data
 auto-scaling.
 
+## Streaming
+
+After `initialize()`, call `initStreaming(seriesCount, maxPoints)` with positive
+integer dimensions. `addVector(timestamp, values)` requires a finite timestamp
+and one value per configured series. It snapshots `values`, so the caller may
+reuse the scalar array immediately.
+
+`addVectors(timestamps, valuesBySeries)` requires aligned `Float64Array` columns
+and finite timestamps. It validates the complete input before flushing queued
+scalar samples or transferring buffers; rejected input leaves those buffers
+attached and queued samples unchanged. Valid scalar and bulk calls retain their
+order, and ring-buffer wrap preserves chronological display. Use `NaN` in a Y
+column for a gap, never in the timestamp column.
+
+`initStreaming` discards queued samples from the previous stream. Resetting
+streaming or replacing data cancels a pending viewport animation for the old
+dataset so it cannot restore an obsolete X range.
+
+## Coding-agent guidance
+
 For version-aware coding-agent guidance, connect the optional local
 `@sixtyfold/mcp` server. It is installed separately and never enters the chart
 runtime or browser bundle.

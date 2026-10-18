@@ -24,8 +24,17 @@
   /** Leave undefined to inherit the chart's configured `animated` default. */
   export let viewportAnimated: boolean | undefined = undefined;
   export let statsIntervalMs: number | undefined = undefined;
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   export let onReady: ((chart: LineChart) => void) | undefined = undefined;
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   export let onError: ((error: unknown) => void) | undefined = undefined;
   export let onStats: ((stats: LineChartStats) => void) | undefined = undefined;
   export let onSeriesVisibilityChange: ((event: SeriesVisibilityChangeEvent) => void) | undefined =
@@ -43,7 +52,9 @@
   // oxlint-disable-next-line no-unassigned-vars
   let canvas: HTMLCanvasElement;
   let ready = false;
+  let readyNotified = false;
   let disposed = false;
+  let rendererFailed = false;
   let reportedRendererError: unknown;
   let appliedData: LineData | undefined;
   let appliedAppearance: DeepPartial<LineAppearanceOptions> | undefined;
@@ -51,7 +62,15 @@
 
   // The arguments are the reactive dependencies; the body reads them directly
   // so a single change installs data, appearance, and viewport in one update.
-  $: applyReactiveProps(ready, chart, data, appearance, viewport, viewportAnimated);
+  $: applyReactiveProps(
+    ready,
+    chart,
+    data,
+    dataUpdateOptions,
+    appearance,
+    viewport,
+    viewportAnimated,
+  );
   $: if (chart) {
     chart.setStatsCallback(onStats ? (stats) => onStats?.(stats) : null, {
       intervalMs: statsIntervalMs,
@@ -65,25 +84,39 @@
     isReady: boolean,
     instance: LineChart | null,
     nextData: LineData | undefined,
+    nextDataUpdateOptions: LineDataUpdateOptions | undefined,
     nextAppearance: DeepPartial<LineAppearanceOptions> | undefined,
     nextViewport: Partial<Viewport> | undefined,
     animated: boolean | undefined,
   ): void {
-    if (!isReady || !instance) return;
-    instance.batch(() => {
-      if (nextData && nextData !== appliedData) {
-        installLineData(instance, nextData, dataUpdateOptions);
-        appliedData = nextData;
+    if (!isReady || !instance || disposed || rendererFailed) return;
+    try {
+      instance.batch(() => {
+        if (nextData && nextData !== appliedData) {
+          installLineData(instance, nextData, nextDataUpdateOptions);
+          appliedData = nextData;
+        }
+        if (nextAppearance && nextAppearance !== appliedAppearance) {
+          instance.updateAppearance(nextAppearance);
+          appliedAppearance = nextAppearance;
+        }
+        if (hasViewport(nextViewport) && nextViewport !== appliedViewport) {
+          instance.setViewport(nextViewport, { animated });
+          appliedViewport = nextViewport;
+        }
+      });
+    } catch (error) {
+      if (!disposed && error !== reportedRendererError) onError?.(error);
+      return;
+    }
+    if (!disposed && !rendererFailed && chart === instance && !readyNotified) {
+      readyNotified = true;
+      try {
+        onReady?.(instance);
+      } catch (error) {
+        if (!disposed) onError?.(error);
       }
-      if (nextAppearance && nextAppearance !== appliedAppearance) {
-        instance.updateAppearance(nextAppearance);
-        appliedAppearance = nextAppearance;
-      }
-      if (hasViewport(nextViewport) && nextViewport !== appliedViewport) {
-        instance.setViewport(nextViewport, { animated });
-        appliedViewport = nextViewport;
-      }
-    });
+    }
   }
 
   onMount(() => {
@@ -96,6 +129,7 @@
     }
     chart = instance;
     instance.setRendererErrorCallback((error) => {
+      rendererFailed = true;
       reportedRendererError = error;
       if (!disposed) onError?.(error);
     });
@@ -107,8 +141,9 @@
       .initialize()
       .then(() => {
         if (disposed || chart !== instance) return;
+        // The reactive pass installs props before notifying readiness and can
+        // retry with corrected props if the initial installation fails.
         ready = true;
-        onReady?.(instance);
       })
       .catch((error) => {
         if (!disposed && error !== reportedRendererError) onError?.(error);

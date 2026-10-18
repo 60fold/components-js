@@ -10,6 +10,8 @@ const fromRoot = (path: string) => resolve(import.meta.dirname, path);
 const alias = [
   { find: /^@sixtyfold\/core\/(.*)$/, replacement: fromRoot("packages/core/src/$1") },
   { find: "@sixtyfold/core", replacement: fromRoot("packages/core/src/index.ts") },
+  { find: /^@sixtyfold\/grid\/(.*)$/, replacement: fromRoot("packages/grid/src/$1") },
+  { find: "@sixtyfold/grid", replacement: fromRoot("packages/grid/src/index.ts") },
   { find: /^@sixtyfold\/line\/(.*)$/, replacement: fromRoot("packages/line/src/$1") },
   { find: "@sixtyfold/line", replacement: fromRoot("packages/line/src/index.ts") },
   {
@@ -23,6 +25,22 @@ const alias = [
   { find: /^@sixtyfold\/mcp\/(.*)$/, replacement: fromRoot("packages/mcp/src/$1") },
   { find: "@sixtyfold/mcp", replacement: fromRoot("packages/mcp/src/index.ts") },
   { find: "@test/support", replacement: fromRoot("test/support") },
+];
+
+const gridBenchmarkAlias = [
+  ...alias,
+  { find: "@grid-benchmark/types", replacement: fromRoot("packages/grid/src/types.ts") },
+];
+
+// Keep React DOM's React peer in an isolated workspace fixture; a package
+// alias alone can accidentally bind the old renderer to the root React 19.
+const react18Alias = [
+  { find: /^react(\/.*)?$/, replacement: fromRoot("test/fixtures/react18/node_modules/react$1") },
+  {
+    find: /^react-dom(\/.*)?$/,
+    replacement: fromRoot("test/fixtures/react18/node_modules/react-dom$1"),
+  },
+  ...alias,
 ];
 
 // One project per framework: the adapter packages need mutually incompatible
@@ -41,7 +59,15 @@ export default defineConfig({
         test: {
           name: "engines",
           environment: "jsdom",
-          include: ["packages/{core,line,stock,ssr,themes,mcp}/src/**/*.test.ts"],
+          include: ["packages/{core,grid,line,stock,ssr,themes,mcp}/src/**/*.test.ts"],
+        },
+      },
+      {
+        resolve: { alias: gridBenchmarkAlias },
+        test: {
+          name: "grid-benchmarks",
+          environment: "node",
+          include: ["benchmarks/grid/src/**/*.test.ts", "benchmarks/grid-summary/src/**/*.test.ts"],
         },
       },
       {
@@ -59,6 +85,19 @@ export default defineConfig({
           name: "react",
           environment: "jsdom",
           include: ["packages/react/test/**/*.test.tsx"],
+          exclude: ["packages/react/test/react18.test.tsx"],
+        },
+      },
+      {
+        resolve: { alias: react18Alias },
+        oxc: { jsx: { runtime: "automatic" } },
+        test: {
+          name: "react18",
+          environment: "jsdom",
+          include: [
+            "packages/react/test/react18.test.tsx",
+            "packages/react/test/initialProps.test.tsx",
+          ],
         },
       },
       {

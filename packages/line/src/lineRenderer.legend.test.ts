@@ -2690,7 +2690,7 @@ describe("lineRenderer staged LOD", () => {
       const pendingStats = messages.find((message) => message.type === "stats");
       expect(pendingStats).toMatchObject({
         presentationMode: "columns",
-        lodReady: false,
+        lodReady: true,
       });
       expect(pendingStats?.presentationLargestBucket as number).toBeGreaterThanOrEqual(8);
       expect(pendingStats?.presentationLargestBucket as number).toBeLessThanOrEqual(128);
@@ -2966,7 +2966,7 @@ describe("lineRenderer staged LOD", () => {
       pendingFrame!(performance.now() + 40);
 
       expect(messages.find((message) => message.type === "stats")).toMatchObject({
-        lodReady: false,
+        lodReady: true,
         bucketSize: 1,
         visiblePoints: 1002,
         renderedPoints: 1002,

@@ -26,6 +26,14 @@ automatically. Construction options are read once; data, appearance, viewport,
 and callback props are reactive. Use a fresh data object for each transferable
 bulk update.
 
+`onReady` runs once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. Imperative
+changes made inside the callback are not overwritten by the pending initial
+reactive update. This callback does not wait for the resulting canvas frame.
+A rejected prop installation reports `onError`; supply corrected props to retry
+without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
+
 Prefer `$state.raw` for datasets. `$state` deep-proxies the surrounding object
 graph, which costs more than it buys for bulk data the renderer only reads
 once.
@@ -34,8 +42,9 @@ Renderer stats are collected only when you supply `onStats`. Leaving
 `viewportAnimated` unset inherits the chart's own `animated` option; setting it
 overrides that per update.
 
-`onError` reports construction errors, renderer startup/runtime failures, and
-overlay resolution or renderer-delivery failures. Renderer and overlay failures
+`onError` reports construction and reactive prop-installation errors, renderer
+startup/runtime failures, and overlay resolution or renderer-delivery failures.
+Renderer and overlay failures
 can be narrowed with `ChartRendererError` and `ChartOverlayError` from the
 installed chart engine.
 

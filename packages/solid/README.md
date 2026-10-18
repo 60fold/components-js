@@ -28,10 +28,17 @@ Renderer stats are collected only while `onStats` is supplied. Leaving
 `viewportAnimated` unset inherits the chart's own `animated` option; setting it
 overrides that per update.
 
-`onError` reports construction errors, renderer startup/runtime failures, and
-overlay resolution or renderer-delivery failures. Renderer and overlay failures
+`onError` reports construction and reactive prop-installation errors, renderer
+startup/runtime failures, and overlay resolution or renderer-delivery failures.
+Renderer and overlay failures
 can be narrowed with `ChartRendererError` and `ChartOverlayError` from the
 installed chart engine.
+
+`onReady` fires once, after renderer initialization and the first successful
+batch of data, appearance, and viewport props. It does not wait for a painted
+frame. A rejected prop installation reports `onError`; supply corrected props
+to retry without remounting. Successfully installed data is not transferred again.
+Renderer failures are terminal and require remounting the component.
 
 ## Licensing
 

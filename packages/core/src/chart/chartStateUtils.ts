@@ -31,6 +31,11 @@ export function isPlainObject(v: unknown): v is Record<string, any> {
   return prototype === Object.prototype || prototype === null;
 }
 
+// Never traverse or reassign prototypes through untrusted configuration keys.
+function isUnsafeConfigKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
 /** Deep clone plain-data objects. Functions and non-plain objects are copied by reference. */
 export function deepClone<T>(obj: T): T {
   if (Array.isArray(obj)) {
@@ -38,16 +43,24 @@ export function deepClone<T>(obj: T): T {
   }
   if (!isPlainObject(obj)) return obj;
   const out: Record<string, any> = {};
-  for (const key of Object.keys(obj)) out[key] = deepClone(obj[key]);
+  for (const key of Object.keys(obj)) {
+    if (isUnsafeConfigKey(key)) continue;
+    out[key] = deepClone(obj[key]);
+  }
   return out as T;
 }
 
 /** Deep merge `source` into `target`. Arrays replace wholesale. Undefined keys are skipped. */
 export function deepMerge(target: Record<string, any>, source: Record<string, any>): void {
   for (const key of Object.keys(source)) {
+    if (isUnsafeConfigKey(key)) continue;
     const val = source[key];
     if (val === undefined) continue;
-    if (isPlainObject(val) && isPlainObject(target[key])) {
+    if (
+      isPlainObject(val) &&
+      Object.prototype.hasOwnProperty.call(target, key) &&
+      isPlainObject(target[key])
+    ) {
       deepMerge(target[key], val);
     } else {
       target[key] = deepClone(val);

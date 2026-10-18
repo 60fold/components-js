@@ -5,7 +5,6 @@ import {
   mergeProps,
   onMounted,
   onUnmounted,
-  onUpdated,
   shallowRef,
   watch,
   type CSSProperties,
@@ -20,7 +19,14 @@ import {
   type LineDataUpdateOptions,
   type SeriesVisibilityChangeEvent,
 } from "@sixtyfold/line";
-import { hasViewport, installLineData, type LineData } from "./shared.js";
+import {
+  clearUnconsumedStatsOnce,
+  hasStatsListener,
+  hasViewport,
+  installLineData,
+  type LineData,
+  type StatsListener,
+} from "./shared.js";
 
 /** Vue host for a Sixtyfold line chart. The component is SSR-safe and emits the underlying chart on readiness. */
 export const SixtyfoldLineChart = defineComponent({
@@ -35,11 +41,16 @@ export const SixtyfoldLineChart = defineComponent({
     /** Leave undefined to inherit the chart's configured `animated` default. */
     viewportAnimated: { type: Boolean, default: undefined },
     statsIntervalMs: Number,
+    // Listener presence controls renderer work. Vue skips updates for declared
+    // emit listeners, so stats listeners must be reactive props instead.
+    onStats: [Function, Array] as PropType<StatsListener<LineChartStats>>,
+    onStatsOnce: [Function, Array] as PropType<StatsListener<LineChartStats>>,
   },
   emits: {
+    /** Fires once after initialization and the first successful prop batch; does not wait for paint. */
     ready: (_chart: LineChart) => true,
+    /** Reports construction, reactive prop-installation, renderer, and overlay failures. */
     error: (_error: unknown) => true,
-    stats: (_stats: LineChartStats) => true,
     seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true,
   },
   setup(props, { attrs, emit, expose }) {
@@ -47,31 +58,48 @@ export const SixtyfoldLineChart = defineComponent({
     const chart = shallowRef<LineChart | null>(null);
     const vm = getCurrentInstance();
     let ready = false;
+    let readyNotified = false;
     let disposed = false;
+    let rendererFailed = false;
     let appliedData: LineData | undefined;
     let appliedAppearance: DeepPartial<LineAppearanceOptions> | undefined;
     let appliedViewport: Partial<Viewport> | undefined;
     let statsEnabled: boolean | undefined;
+    let statsOnceConsumed = false;
     let statsInterval: number | undefined;
     let reportedRendererError: unknown;
 
     expose({ chart });
 
-    // Declared emits are stripped from `attrs`, so the raw vnode props are the
-    // only place a bound `stats` listener is visible. Collecting stats costs
-    // renderer work, so it stays off until something is actually listening.
-    const hasStatsListener = (): boolean => Boolean(vm?.vnode.props?.onStats);
-
     const syncStatsCallback = (): void => {
       const instance = chart.value;
-      if (!instance) return;
-      const enabled = hasStatsListener();
+      if (!instance || disposed) return;
+      const enabled =
+        hasStatsListener(props.onStats) ||
+        (hasStatsListener(props.onStatsOnce) && !statsOnceConsumed);
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
-      instance.setStatsCallback(enabled ? (stats) => emit("stats", stats) : null, {
-        intervalMs: props.statsIntervalMs,
-      });
+      // Native dispatch preserves current listeners, arrays, .once and Vue's
+      // error handling even though stats is declared through listener props.
+      instance.setStatsCallback(
+        enabled
+          ? (stats) => {
+              if (disposed) return;
+              const hadOnceListener = hasStatsListener(props.onStatsOnce);
+              if (hadOnceListener) statsOnceConsumed = true;
+              try {
+                vm?.emit("stats", stats);
+              } finally {
+                if (!hadOnceListener && !statsOnceConsumed) {
+                  clearUnconsumedStatsOnce(vm);
+                }
+                syncStatsCallback();
+              }
+            }
+          : null,
+        { intervalMs: props.statsIntervalMs },
+      );
     };
 
     // Installs every reactive prop in a single engine update. Each dataset
@@ -79,21 +107,30 @@ export const SixtyfoldLineChart = defineComponent({
     // identity tracking also prevents duplicate installs in main-thread mode.
     const applyReactiveProps = (): void => {
       const instance = chart.value;
-      if (!ready || !instance) return;
-      instance.batch(() => {
-        if (props.data && props.data !== appliedData) {
-          installLineData(instance, props.data, props.dataUpdateOptions);
-          appliedData = props.data;
-        }
-        if (props.appearance && props.appearance !== appliedAppearance) {
-          instance.updateAppearance(props.appearance);
-          appliedAppearance = props.appearance;
-        }
-        if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
-          instance.setViewport(props.viewport, { animated: props.viewportAnimated });
-          appliedViewport = props.viewport;
-        }
-      });
+      if (!ready || !instance || disposed || rendererFailed) return;
+      try {
+        instance.batch(() => {
+          if (props.data && props.data !== appliedData) {
+            installLineData(instance, props.data, props.dataUpdateOptions);
+            appliedData = props.data;
+          }
+          if (props.appearance && props.appearance !== appliedAppearance) {
+            instance.updateAppearance(props.appearance);
+            appliedAppearance = props.appearance;
+          }
+          if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
+            instance.setViewport(props.viewport, { animated: props.viewportAnimated });
+            appliedViewport = props.viewport;
+          }
+        });
+      } catch (error) {
+        if (!disposed && error !== reportedRendererError) emit("error", error);
+        return;
+      }
+      if (!disposed && !rendererFailed && chart.value === instance && !readyNotified) {
+        readyNotified = true;
+        emit("ready", instance);
+      }
     };
 
     onMounted(() => {
@@ -107,6 +144,7 @@ export const SixtyfoldLineChart = defineComponent({
       }
       chart.value = instance;
       instance.setRendererErrorCallback((error) => {
+        rendererFailed = true;
         reportedRendererError = error;
         if (!disposed) emit("error", error);
       });
@@ -114,14 +152,15 @@ export const SixtyfoldLineChart = defineComponent({
         if (!disposed) emit("error", error);
       });
       syncStatsCallback();
-      instance.setSeriesVisibilityCallback((event) => emit("seriesVisibilityChange", event));
+      instance.setSeriesVisibilityCallback((event) => {
+        if (!disposed) emit("seriesVisibilityChange", event);
+      });
       void instance
         .initialize()
         .then(() => {
           if (disposed || chart.value !== instance) return;
           ready = true;
           applyReactiveProps();
-          emit("ready", instance);
         })
         .catch((error) => {
           if (!disposed && error !== reportedRendererError) emit("error", error);
@@ -129,15 +168,25 @@ export const SixtyfoldLineChart = defineComponent({
     });
 
     watch(
-      () => [props.data, props.appearance, props.viewport, props.viewportAnimated] as const,
+      () =>
+        [
+          props.data,
+          props.dataUpdateOptions,
+          props.appearance,
+          props.viewport,
+          props.viewportAnimated,
+        ] as const,
       () => applyReactiveProps(),
     );
     watch(
-      () => props.statsIntervalMs,
+      () =>
+        [
+          hasStatsListener(props.onStats),
+          hasStatsListener(props.onStatsOnce),
+          props.statsIntervalMs,
+        ] as const,
       () => syncStatsCallback(),
     );
-    // A listener can be bound or removed without any tracked prop changing.
-    onUpdated(() => syncStatsCallback());
 
     onUnmounted(() => {
       disposed = true;

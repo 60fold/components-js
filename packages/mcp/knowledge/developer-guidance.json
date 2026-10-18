@@ -76,11 +76,13 @@
       "cause": "A vanilla integration called a data method before initialize() completed, or initialized the same canvas more than once.",
       "checks": [
         "Verify that initialize() is awaited exactly once for each chart instance.",
-        "If a framework owns the view, prefer the official adapter so mount and unmount ordering is handled for you."
+        "If a framework owns the view, prefer the official adapter so mount and unmount ordering is handled for you.",
+        "Adapter readiness fires once after initialization and the first successful batch of data, appearance, and viewport props; it is not a painted-frame notification."
       ],
       "fixes": [
         "Await initialize() before calling setData() or setMultiSeriesData().",
-        "Destroy the old chart before reusing its canvas for another instance."
+        "Destroy the old chart before reusing its canvas for another instance.",
+        "For a rejected adapter prop installation, supply corrected props to retry without remounting. Successfully installed data is not transferred again. A terminal renderer failure requires a remount."
       ],
       "snippet": {
         "language": "ts",
@@ -167,11 +169,13 @@
       "cause": "The X column used seconds or strings instead of finite ordered epoch milliseconds, or observations were not sorted.",
       "checks": [
         "Inspect the first and last timestamps and convert them with new Date(value).",
-        "Verify every timestamp is finite and non-decreasing."
+        "Verify every timestamp is finite. Stock streaming requires strictly increasing timestamps within each batch and after every previously queued or appended candle.",
+        "Distinguish streaming from static StockChart.setData(): static data may be monotonically ascending or descending and may contain equal timestamps; the chart normalizes its order."
       ],
       "fixes": [
         "Convert epoch seconds to milliseconds before creating the Float64Array.",
-        "Parse ISO dates once during ingestion and sort complete observations before splitting them into columns."
+        "Parse ISO dates once during ingestion and sort complete observations before splitting them into columns.",
+        "Deduplicate stock stream observations before appending. Streaming append methods do not update an existing candle with the same timestamp."
       ],
       "snippet": {
         "language": "ts",
@@ -197,7 +201,8 @@
       "cause": "Columnar data was created from separate filters or mappings, so the time and value columns no longer describe the same observations.",
       "checks": [
         "Compare every column length before calling the chart.",
-        "Validate numeric conversion before transferring buffers."
+        "Validate numeric conversion before transferring buffers.",
+        "Stock addCandles requires six equally sized columns; addCandleBatches validates the complete chunk list before any transfer. Invalid timestamps or column lengths leave caller buffers attached."
       ],
       "fixes": [
         "Filter and sort complete source observations first, then split them into aligned typed columns.",

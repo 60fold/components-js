@@ -64,6 +64,12 @@ describe("@sixtyfold/mcp guidance", () => {
     expect(result.code).toContain("timestamp: new Float64Array");
   });
 
+  it.each(COMPONENTS)("defaults to vanilla lifecycle guidance for %s", (component) => {
+    expect(generateIntegration({ component })).toEqual(
+      generateIntegration({ component, framework: "vanilla" }),
+    );
+  });
+
   it.each(
     COMPONENTS.flatMap((component) =>
       FRAMEWORKS.map((framework) => [component, framework] as const),

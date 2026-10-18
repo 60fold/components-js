@@ -88,6 +88,12 @@ The bundled API inventory is generated from the same declaration files shipped
 by the component packages. CI fails when it drifts from those public entry
 points.
 
+Integration notes also describe adapter readiness and prop-error recovery,
+React Activity visibility, Vue once-only stats collection, and Angular stats
+subscriptions. Timestamp diagnostics distinguish strictly increasing stock
+streaming from normalized static history; stock append validation happens
+before buffer transfer.
+
 ## Privacy and network behavior
 
 `@sixtyfold/mcp` is local-first:

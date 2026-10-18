@@ -104,6 +104,12 @@ canvas. Build any labels and control set in your application, call
 controls entirely when direct wheel, pointer, touch, and keyboard navigation is
 enough.
 
+`batch()` queues control changes while bulk data installs post immediately.
+Preset callbacks and events follow that renderer command order, including
+changes made from a callback. In market time, partial viewport edges resolve
+against the renderer's accepted range or animation target, including compressed
+gaps and `minViewportRange`; `getViewport()` follows the resulting renderer sync.
+
 Provide a localized canvas name and an adjacent summary or table for production
 charts. Keyboard semantics and framework-specific attributes are documented in
 the [accessibility integration guide](https://github.com/60fold/components-js/blob/main/ACCESSIBILITY.md).
@@ -115,6 +121,26 @@ For live dashboards that must not rescale as new extrema arrive, construct the
 chart with `yDomain: { min, max }`. Either edge may be omitted to keep that side
 auto-scaled; omitting `yDomain` preserves the default visible-candle
 auto-scaling.
+
+## Streaming
+
+After `initialize()`, call `initStreaming(maxCandles)` and append with
+`addCandle`, `addCandles`, or `addCandleBatches`. Streaming timestamps must be
+finite and strictly increasing, including across calls, queued samples, and
+chunks. Repeating a timestamp does not update an existing candle; deduplicate
+the feed before appending.
+
+Bulk appends require six equally sized OHLCV columns. `addCandleBatches`
+validates the entire chunk list before any transfer. Invalid timestamps or
+column lengths leave caller buffers attached and the existing stream unchanged.
+Worker mode transfers valid buffers, so capture any values the application needs
+before appending and supply fresh arrays for subsequent updates.
+
+Static `setData` has a different ordering contract: it accepts monotonically
+ascending or descending history, including equal timestamps, and normalizes
+the order. Replacing data or resetting streaming cancels a pending viewport
+animation for the old dataset. Streamed LOD hierarchies rebuild from snapshots
+and publish atomically while existing completed levels remain usable.
 
 ## Estimated volume profiles
 

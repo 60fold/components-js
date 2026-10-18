@@ -90,6 +90,7 @@ import {
   type RawCandleValues,
 } from "./engine/indicatorRuntime.js";
 import { StockLevelAccess, type AggregatedLevel } from "./engine/levels.js";
+import { validateCandleAppend } from "./streamingValidation.js";
 import {
   buildMarketCoordinates as buildMarketCoordinateState,
   collectMarketDayStarts,
@@ -241,6 +242,15 @@ export function createStockChartEngine(
   let totalCandlesReceived = 0;
   let previousDataLength = 0;
   let lodBuildGeneration = 0;
+  interface LODBuild {
+    generation: number;
+    source: AggregatedLevel;
+    borrowedPrefix: boolean;
+    levels: AggregatedLevel[];
+  }
+  let activeLODBuild: LODBuild | null = null;
+  let lodRebuildRequested = false;
+  let lodBuildTimer: ReturnType<typeof setTimeout> | null = null;
   let lodRebuildTimer: ReturnType<typeof setTimeout> | null = null;
   // Latest performance.now() by which a debounced LOD rebuild must run, so
   // sustained streaming can't keep resetting the debounce and starve it.
@@ -277,11 +287,21 @@ export function createStockChartEngine(
     }
   }
 
-  function stopRenderer(): void {
-    stopped = true;
+  function cancelLODWork(): void {
     clearScheduledLODRebuild();
+    if (lodBuildTimer !== null) {
+      clearTimeout(lodBuildTimer);
+      lodBuildTimer = null;
+    }
     lodRebuildDeadline = 0;
     lodBuildGeneration++;
+    activeLODBuild = null;
+    lodRebuildRequested = false;
+  }
+
+  function stopRenderer(): void {
+    stopped = true;
+    cancelLODWork();
     deferInitialRenderUntilLODReady = false;
     ringBufferMode = false;
     state.dataLoadStartTime = 0;
@@ -478,6 +498,61 @@ export function createStockChartEngine(
     minRange = configuredMinRange;
   }
 
+  function rebaseStreamingMarketCoordinates(): void {
+    // Capture timestamp anchors before rewriting the coordinates or evicting
+    // any candles. Animation/selection state also lives in market X units.
+    const animation = state.viewportAnimation;
+    const viewports = [state.viewport];
+    if (animation.active) viewports.push(animation.fromViewport, animation.toViewport);
+    const anchors = viewports.map((viewport) => ({
+      viewport,
+      xMin: marketXToTimestamp(viewport.xMin),
+      xMax: marketXToTimestamp(viewport.xMax),
+    }));
+    const wasFollowingRight =
+      Math.abs(state.viewport.xMax - state.dataBounds.xMax) <=
+      Math.max(1, (state.dataBounds.xMax - state.dataBounds.xMin) * 0.001);
+    const selectionStart =
+      state.selectionStart === null ? null : marketXToTimestamp(state.selectionStart);
+    const selectionEnd =
+      state.selectionEnd === null ? null : marketXToTimestamp(state.selectionEnd);
+
+    // Both published levels and in-flight borrowed prefixes use the old X
+    // coordinates. Cancel before the in-place rewrite; rebuild them from raw.
+    cancelLODWork();
+    rebuildMarketCoordinates();
+    state.dataBounds = normalizeBounds(
+      getRawMarketX(0),
+      getRawMarketX(dataLength - 1),
+      state.dataBounds.yMin,
+      state.dataBounds.yMax,
+      minRange,
+    );
+    for (const { viewport, xMin, xMax } of anchors) {
+      const mappedMin = timestampToMarketX(xMin);
+      const mappedMax = timestampToMarketX(xMax);
+      const span = Math.min(
+        state.dataBounds.xMax - state.dataBounds.xMin,
+        Math.max(minRange, mappedMax - mappedMin),
+      );
+      viewport.xMin = Math.max(
+        state.dataBounds.xMin,
+        Math.min(mappedMin, state.dataBounds.xMax - span),
+      );
+      viewport.xMax = viewport.xMin + span;
+    }
+    if (wasFollowingRight) {
+      const span = state.viewport.xMax - state.viewport.xMin;
+      state.viewport.xMax = state.dataBounds.xMax;
+      state.viewport.xMin = state.viewport.xMax - span;
+    }
+    state.selectionStart = selectionStart === null ? null : timestampToMarketX(selectionStart);
+    state.selectionEnd = selectionEnd === null ? null : timestampToMarketX(selectionEnd);
+    state.xGridAlphas.clear();
+    resetToRawLODLevel();
+    lodBuildComplete = false;
+  }
+
   function ensureMarketDayStarts(): void {
     if (!marketDayStartsDirty) return;
     marketDayStarts = collectMarketDayStarts(dataLength, getRawTimestamp);
@@ -562,6 +637,44 @@ export function createStockChartEngine(
     lodLevelsBuilt = Math.max(lodLevelsBuilt, rawLevel.length > 0 ? 1 : 0);
   }
 
+  function copyLODSource(source: AggregatedLevel, startIndex = 0): AggregatedLevel {
+    const copyColumn = (column: Float64Array): Float64Array => {
+      const copy = new Float64Array(source.length);
+      const firstLength = Math.min(source.length, column.length - startIndex);
+      copy.set(column.subarray(startIndex, startIndex + firstLength));
+      if (firstLength < source.length) {
+        copy.set(column.subarray(0, source.length - firstLength), firstLength);
+      }
+      return copy;
+    };
+    return {
+      ...source,
+      rawSource: false,
+      timestamp: copyColumn(source.timestamp),
+      open: copyColumn(source.open),
+      high: copyColumn(source.high),
+      low: copyColumn(source.low),
+      close: copyColumn(source.close),
+      volume: copyColumn(source.volume),
+      ...(source.marketX ? { marketX: copyColumn(source.marketX) } : {}),
+    };
+  }
+
+  function protectLODBuildPrefix(incomingCount: number): void {
+    const build = activeLODBuild;
+    if (
+      !build?.borrowedPrefix ||
+      incomingCount === 0 ||
+      (!bufferFull && incomingCount <= ringBufferMaxCandles - writeIndex)
+    ) {
+      return;
+    }
+    // Growing rings have an immutable physical prefix. Copy only when an
+    // incoming batch would overwrite it, before writing even its first candle.
+    build.source = copyLODSource(build.source);
+    build.borrowedPrefix = false;
+  }
+
   let pendingViewportRequestId: number | undefined;
 
   function emitViewportSync(viewportRequestId?: number): void {
@@ -605,8 +718,10 @@ export function createStockChartEngine(
       length: timestamp.length,
     }));
     stopped = false;
-    clearScheduledLODRebuild();
-    lodBuildGeneration++;
+    cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     ringBufferMode = false;
     writeIndex = 0;
     bufferFull = false;
@@ -666,9 +781,10 @@ export function createStockChartEngine(
 
   function initRingBuffer(maxCandles: number) {
     stopped = false;
-    clearScheduledLODRebuild();
-    lodRebuildDeadline = 0;
-    lodBuildGeneration++;
+    cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     deferInitialRenderUntilLODReady = false;
     ringBufferMode = true;
     ringBufferMaxCandles = maxCandles;
@@ -724,8 +840,26 @@ export function createStockChartEngine(
     if (!dataTimestamp || !ringBufferMode) return;
 
     const count = timestamps.length;
-    let previousTimestamp =
-      dataLength > 0 ? dataTimestamp[rawLogicalToPhysicalIndex(dataLength - 1)] : Number.NaN;
+    if (count === 0) {
+      if (!deferLODRebuild && deferInitialRenderUntilLODReady && dataLength === 0) {
+        deferInitialRenderUntilLODReady = false;
+      }
+      return;
+    }
+    const previousTimestamp = dataLength > 0 ? getRawTimestamp(dataLength - 1) : Number.NaN;
+    const previousRawInterval = rawInterval;
+    // Resolve one cadence for the entire batch, including its join to the
+    // retained tail, so an early gap never uses a provisional larger cap.
+    let intervalTimestamp = previousTimestamp;
+    for (const timestamp of timestamps) {
+      updateRawInterval(intervalTimestamp, timestamp);
+      intervalTimestamp = timestamp;
+    }
+    if (timeScale === "market" && dataLength > 0 && rawInterval !== previousRawInterval) {
+      rebaseStreamingMarketCoordinates();
+    }
+    protectLODBuildPrefix(count);
+    let precedingTimestamp = previousTimestamp;
     let previousMarketX =
       timeScale === "market" && dataLength > 0 ? getRawMarketX(dataLength - 1) : 0;
     for (let i = 0; i < count; i++) {
@@ -740,9 +874,8 @@ export function createStockChartEngine(
           }
         : null;
       const timestamp = timestamps[i];
-      updateRawInterval(previousTimestamp, timestamp);
       if (dataMarketX) {
-        const delta = timestamp - previousTimestamp;
+        const delta = timestamp - precedingTimestamp;
         dataMarketX[writeIndex] =
           totalCandlesReceived === 0
             ? 0
@@ -750,7 +883,7 @@ export function createStockChartEngine(
               (Number.isFinite(delta) && delta > 0 ? Math.min(delta, marketGapCap()) : rawInterval);
         previousMarketX = dataMarketX[writeIndex];
       }
-      previousTimestamp = timestamp;
+      precedingTimestamp = timestamp;
       dataTimestamp[writeIndex] = timestamp;
       dataOpen![writeIndex] = opens[i];
       dataHigh![writeIndex] = highs[i];
@@ -776,7 +909,10 @@ export function createStockChartEngine(
     updateRawLODLevel();
 
     if (!deferLODRebuild) {
-      if (dataLength > 1000 && (!hasBuiltAggregations() || previousDataLength === 0)) {
+      if (
+        deferInitialRenderUntilLODReady ||
+        (dataLength > 1000 && (!hasBuiltAggregations() || previousDataLength === 0))
+      ) {
         buildLODLevels();
       } else {
         scheduleLODRebuild();
@@ -842,9 +978,14 @@ export function createStockChartEngine(
 
   function buildLODLevels() {
     if (!dataTimestamp || stopped) return;
+    if (activeLODBuild) {
+      scheduleLODRebuild();
+      return;
+    }
 
     clearScheduledLODRebuild();
     lodRebuildDeadline = 0;
+    lodRebuildRequested = false;
     const generation = ++lodBuildGeneration;
     lodBuildComplete = false;
     state.rangePreviewValid = false;
@@ -852,7 +993,22 @@ export function createStockChartEngine(
     // Build into a private hierarchy. The active hierarchy remains renderable
     // until the replacement is complete, so a streaming append never falls
     // back through raw/intermediate levels while the async rebuild advances.
-    const nextLODLevels = [createRawLevel()];
+    // Freeze the source length and indexing, not the live ring's write index.
+    // A growing prefix can stay borrowed until its first eviction; a full ring
+    // needs a logical-order snapshot immediately. Synchronous SSR can read the
+    // live ring directly. None of these sources enters the active LODs.
+    const source: AggregatedLevel = {
+      ...createRawLevel(),
+      rawSource: ssr,
+      ...(dataMarketX ? { marketX: dataMarketX } : {}),
+    };
+    const build: LODBuild = {
+      generation,
+      source: !ssr && ringBufferMode && bufferFull ? copyLODSource(source, writeIndex) : source,
+      borrowedPrefix: !ssr && ringBufferMode && !bufferFull,
+      levels: [],
+    };
+    activeLODBuild = build;
 
     // Build only levels coarser than the source cadence. The previous hourly
     // source could safely skip the duplicate 1H level; second-resolution feeds
@@ -860,22 +1016,21 @@ export function createStockChartEngine(
     const firstAggregationIndex = firstAggregationLevelIndex(STOCK_AGGREGATION_LEVELS, rawInterval);
     lodLevelsTotal =
       dataLength > 0 ? 1 + (STOCK_AGGREGATION_LEVELS.length - firstAggregationIndex) : 0;
-    buildAggregatedLevel(firstAggregationIndex, ssr, generation, nextLODLevels);
+    buildAggregatedLevel(firstAggregationIndex, ssr, build);
   }
 
-  function buildAggregatedLevel(
-    levelIdx: number,
-    sync = false,
-    generation = lodBuildGeneration,
-    nextLODLevels: AggregatedLevel[] = [createRawLevel()],
-  ) {
-    if (stopped || generation !== lodBuildGeneration) return;
+  function buildAggregatedLevel(levelIdx: number, sync: boolean, build: LODBuild) {
+    if (stopped || build.generation !== lodBuildGeneration || activeLODBuild !== build) return;
 
-    const source = nextLODLevels[0];
+    const source = build.source;
     if (levelIdx >= STOCK_AGGREGATION_LEVELS.length || !source || source.length === 0) {
-      lodLevels = nextLODLevels;
-      lodLevelsBuilt = nextLODLevels.length;
+      // Keep the live raw tail while publishing all coarser snapshot levels at
+      // once. A queued follow-up must never reinstate the first-paint barrier.
+      lodLevels = [createRawLevel(), ...build.levels];
+      lodLevelsBuilt = lodLevels.length;
+      activeLODBuild = null;
       lodBuildComplete = true;
+      deferInitialRenderUntilLODReady = false;
       // A completed asynchronous hierarchy is a semantic state transition, not
       // an ordinary frame sample. Force the next render to publish it even when
       // the previous in-progress stats event was inside the throttle interval;
@@ -884,20 +1039,22 @@ export function createStockChartEngine(
       state.cacheValid = false; // Force re-render with all LODs available
       state.rangePreviewValid = false; // Re-render preview with final LOD levels
       scheduleRender();
+      if (lodRebuildRequested) scheduleLODRebuild();
       return;
     }
 
     const level = STOCK_AGGREGATION_LEVELS[levelIdx];
-    nextLODLevels.push(aggregateLevel(source, level, levelAccess, timeScale === "market"));
+    build.levels.push(aggregateLevel(source, level, levelAccess, timeScale === "market"));
 
     // Build next level
     if (sync) {
-      buildAggregatedLevel(levelIdx + 1, true, generation, nextLODLevels);
+      buildAggregatedLevel(levelIdx + 1, true, build);
     } else {
-      rendererScheduler.scheduleTask(
-        () => buildAggregatedLevel(levelIdx + 1, false, generation, nextLODLevels),
-        10,
-      );
+      lodBuildTimer = rendererScheduler.scheduleTask(() => {
+        if (activeLODBuild !== build) return;
+        lodBuildTimer = null;
+        buildAggregatedLevel(levelIdx + 1, false, build);
+      }, 10);
     }
   }
 
@@ -907,11 +1064,12 @@ export function createStockChartEngine(
       buildLODLevels();
       return;
     }
-    lodBuildComplete = false;
-    lodBuildGeneration++;
-
+    lodRebuildRequested = true;
     const now = performance.now();
     if (lodRebuildDeadline === 0) lodRebuildDeadline = now + LOD_REBUILD_MAX_WAIT_MS;
+    // New samples dirty the next build, not the one already making progress.
+    // Preserve the original deadline while waiting for its atomic publication.
+    if (activeLODBuild) return;
     // Honor the debounce, but never wait past the deadline.
     const wait = Math.max(0, Math.min(delayMs, lodRebuildDeadline - now));
 
@@ -933,14 +1091,29 @@ export function createStockChartEngine(
     // The renderer still caps the painted body at 80% of the available slot.
     const targetSpacing = state.chartWidth < 360 ? 4 : 6;
     const targetCandles = state.chartWidth / targetSpacing;
+    const visibleMinX = Math.max(state.viewport.xMin, state.dataBounds.xMin);
+    const visibleMaxX = Math.min(state.viewport.xMax, state.dataBounds.xMax);
+    const visibleSpan = visibleMaxX - visibleMinX;
 
     for (let i = 0; i < lodLevels.length; i++) {
+      const level = lodLevels[i];
+      if (!level || (i > 0 && level.length === 0)) continue;
+      let coverageRatio = 1;
+      if (i > 0 && visibleSpan > 0) {
+        const snapshotEndTimestamp = levelAccess.getSourceEndTimestamp(level, level.length - 1);
+        const snapshotEndX =
+          timeScale === "market" ? timestampToMarketX(snapshotEndTimestamp) : snapshotEndTimestamp;
+        const coveredSpan = Math.max(0, Math.min(visibleMaxX, snapshotEndX) - visibleMinX);
+        coverageRatio = coveredSpan / visibleSpan;
+        if (coverageRatio < 0.8) return 0;
+      }
       const { startIdx, endIdx } = getVisibleCandles(i);
       const visibleCandles = Math.max(0, endIdx - startIdx + 1);
-      if (visibleCandles <= targetCandles) return i;
+      if (visibleCandles / coverageRatio <= targetCandles) return i;
     }
 
-    return lodLevels.length - 1;
+    const coarsest = lodLevels[lodLevels.length - 1];
+    return coarsest && coarsest.length > 0 ? lodLevels.length - 1 : 0;
   }
 
   function getVisibleCandles(lodIdx: number): {
@@ -1766,6 +1939,15 @@ export function createStockChartEngine(
   function nearestLevelIndex(level: AggregatedLevel, timestamp: number): number {
     if (level.length === 0) return -1;
     let index = levelAccess.binarySearchTimestampLeft(level, timestamp, 0, level.length - 1);
+    if (
+      index > 0 &&
+      !level.rawSource &&
+      level.sourceEndTimestamp &&
+      timestamp >= levelAccess.getTimestamp(level, index - 1) &&
+      timestamp <= level.sourceEndTimestamp[index - 1]
+    ) {
+      return index - 1;
+    }
     if (index > 0) {
       const currentDistance = Math.abs(levelAccess.getTimestamp(level, index) - timestamp);
       const previousDistance = Math.abs(levelAccess.getTimestamp(level, index - 1) - timestamp);
@@ -1899,10 +2081,20 @@ export function createStockChartEngine(
 
     let nearestIdx = levelAccess.binarySearchLeft(level, dataX, 0, level.length - 1);
     if (nearestIdx > 0) {
-      const distCurrent = Math.abs(levelAccess.getX(level, nearestIdx) - dataX);
-      const distPrev = Math.abs(levelAccess.getX(level, nearestIdx - 1) - dataX);
-      if (distPrev < distCurrent) {
+      if (
+        !level.rawSource &&
+        timeScale !== "market" &&
+        level.sourceEndTimestamp &&
+        dataX >= levelAccess.getTimestamp(level, nearestIdx - 1) &&
+        dataX <= level.sourceEndTimestamp[nearestIdx - 1]
+      ) {
         nearestIdx = nearestIdx - 1;
+      } else {
+        const distCurrent = Math.abs(levelAccess.getX(level, nearestIdx) - dataX);
+        const distPrev = Math.abs(levelAccess.getX(level, nearestIdx - 1) - dataX);
+        if (distPrev < distCurrent) {
+          nearestIdx = nearestIdx - 1;
+        }
       }
     }
 
@@ -2114,7 +2306,9 @@ export function createStockChartEngine(
     appendPoint(firstRawX, firstRawClose);
 
     for (let i = 0; i < level.length; i++) {
-      appendPoint(levelAccess.getX(level, i), levelAccess.getClose(level, i));
+      const x = levelAccess.getX(level, i);
+      if (x <= firstRawX) continue;
+      appendPoint(x, levelAccess.getClose(level, i));
     }
 
     const lastRawIndex = dataLength - 1;
@@ -2202,17 +2396,41 @@ export function createStockChartEngine(
     }
   }
 
-  function setTimeViewportRange(xMin: number, xMax: number, animated: boolean): void {
+  function setTimeViewportRange(
+    xMin: number | undefined,
+    xMax: number | undefined,
+    animated: boolean,
+  ): void {
     if (timeScale !== "market") return;
-    const internalMin = timestampToMarketX(xMin);
-    const internalMax = timestampToMarketX(xMax);
+    if (
+      (xMin !== undefined && !Number.isFinite(xMin)) ||
+      (xMax !== undefined && !Number.isFinite(xMax))
+    ) {
+      emitViewportSync();
+      return;
+    }
+    // Resolve partial requests against the latest accepted target. The host
+    // cannot validate a timestamp span against the compressed-time minimum.
+    const current = state.viewportAnimation.active
+      ? state.viewportAnimation.toViewport
+      : state.viewport;
+    const requestedMin = xMin === undefined ? current.xMin : timestampToMarketX(xMin);
+    const requestedMax = xMax === undefined ? current.xMax : timestampToMarketX(xMax);
+    const internalMin = Math.min(requestedMin, requestedMax);
+    const internalMax = Math.max(requestedMin, requestedMax);
+    if (!Number.isFinite(internalMin) || !Number.isFinite(internalMax)) {
+      emitViewportSync();
+      return;
+    }
     if (animated) {
       setViewportRangeAnimated(state, internalMin, internalMax, minRange, performance.now());
     } else {
-      const previousAnimated = state.animated;
-      state.animated = false;
-      setViewportRangeAnimated(state, internalMin, internalMax, minRange, performance.now());
-      state.animated = previousAnimated;
+      handleBaseMessage(
+        state,
+        "setViewportRange",
+        { xMin: internalMin, xMax: internalMax },
+        minRange,
+      );
     }
     emitViewportSync();
   }
@@ -2439,7 +2657,12 @@ export function createStockChartEngine(
         break;
 
       case "addCandles":
-        if (data.initialTimeRange && dataLength === 0) {
+        validateCandleAppend(
+          data.timestamps,
+          [data.opens, data.highs, data.lows, data.closes, data.volumes],
+          dataLength > 0 ? getRawTimestamp(dataLength - 1) : null,
+        );
+        if (data.initialTimeRange && dataLength === 0 && data.timestamps.length > 0) {
           deferInitialRenderUntilLODReady = true;
         }
         addCandles(data.timestamps, data.opens, data.highs, data.lows, data.closes, data.volumes);
@@ -2452,8 +2675,22 @@ export function createStockChartEngine(
         scheduleRender();
         break;
 
-      case "addCandleBatches":
-        if (dataLength === 0) deferInitialRenderUntilLODReady = true;
+      case "addCandleBatches": {
+        let lastTimestamp = dataLength > 0 ? getRawTimestamp(dataLength - 1) : null;
+        // A malformed later chunk must not partially install earlier chunks.
+        for (const batch of data.batches) {
+          lastTimestamp = validateCandleAppend(
+            batch.timestamp,
+            [batch.open, batch.high, batch.low, batch.close, batch.volume],
+            lastTimestamp,
+          );
+        }
+        if (
+          dataLength === 0 &&
+          data.batches.some((batch: Record<string, any>) => batch.timestamp.length > 0)
+        ) {
+          deferInitialRenderUntilLODReady = true;
+        }
         for (let index = 0; index < data.batches.length; index++) {
           const batch = data.batches[index];
           addCandles(
@@ -2476,6 +2713,7 @@ export function createStockChartEngine(
         emitViewportSync();
         scheduleRender();
         break;
+      }
 
       case "setStatsConfig":
         applyStatsConfigFromMessage(stats, data);

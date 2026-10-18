@@ -6,6 +6,8 @@
     "paths": {
       "@sixtyfold/core": ["packages/core/src/index.ts"],
       "@sixtyfold/core/*": ["packages/core/src/*"],
+      "@sixtyfold/grid": ["packages/grid/src/index.ts"],
+      "@sixtyfold/grid/*": ["packages/grid/src/*"],
       "@sixtyfold/line": ["packages/line/src/index.ts"],
       "@sixtyfold/line/*": ["packages/line/src/*"],
       "@sixtyfold/stock": ["packages/stock/src/index.ts"],

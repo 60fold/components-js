@@ -4,6 +4,10 @@ import ts from "typescript";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONFIGS = [
+  "benchmarks/grid/tsconfig.json",
+  "benchmarks/grid-interaction/tsconfig.json",
+  "benchmarks/grid-lifecycle/tsconfig.json",
+  "benchmarks/grid-summary/tsconfig.json",
   "tsconfig.tests.json",
   "tsconfig.tests.react.json",
   "tsconfig.tests.solid.json",

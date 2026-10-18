@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount, type JSX } from "solid-js";
+import { createEffect, onCleanup, onMount, untrack, type JSX } from "solid-js";
 import type { DeepPartial, Viewport } from "@sixtyfold/core";
 import {
   StockChart,
@@ -15,8 +15,17 @@ export interface SixtyfoldStockChartProps {
   appearance?: DeepPartial<StockAppearanceOptions>;
   viewport?: Partial<Viewport>;
   viewportAnimated?: boolean;
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   onReady?: (chart: StockChart) => void;
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   onError?: (error: unknown) => void;
   onStats?: (stats: StockChartStats) => void;
   statsIntervalMs?: number;
@@ -31,28 +40,44 @@ export function SixtyfoldStockChart(props: SixtyfoldStockChartProps): JSX.Elemen
   let canvas!: HTMLCanvasElement;
   let chart: StockChart | null = null;
   let ready = false;
+  let readyNotified = false;
   let disposed = false;
+  let rendererFailed = false;
   let reportedRendererError: unknown;
   let appliedData: OHLCVData | undefined;
   let appliedAppearance: DeepPartial<StockAppearanceOptions> | undefined;
   let appliedViewport: Partial<Viewport> | undefined;
 
   const apply = (): void => {
-    if (!ready || !chart) return;
-    chart.batch(() => {
-      if (props.data && props.data !== appliedData) {
-        chart!.setData(props.data);
-        appliedData = props.data;
+    if (!ready || !chart || disposed || rendererFailed) return;
+    const instance = chart;
+    try {
+      instance.batch(() => {
+        if (props.data && props.data !== appliedData) {
+          chart!.setData(props.data);
+          appliedData = props.data;
+        }
+        if (props.appearance && props.appearance !== appliedAppearance) {
+          chart!.updateAppearance(props.appearance);
+          appliedAppearance = props.appearance;
+        }
+        if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
+          chart!.setViewport(props.viewport, { animated: props.viewportAnimated });
+          appliedViewport = props.viewport;
+        }
+      });
+    } catch (error) {
+      if (!disposed && error !== reportedRendererError) props.onError?.(error);
+      return;
+    }
+    if (!disposed && !rendererFailed && chart === instance && !readyNotified) {
+      readyNotified = true;
+      try {
+        props.onReady?.(instance);
+      } catch (error) {
+        if (!disposed) props.onError?.(error);
       }
-      if (props.appearance && props.appearance !== appliedAppearance) {
-        chart!.updateAppearance(props.appearance);
-        appliedAppearance = props.appearance;
-      }
-      if (hasViewport(props.viewport) && props.viewport !== appliedViewport) {
-        chart!.setViewport(props.viewport, { animated: props.viewportAnimated });
-        appliedViewport = props.viewport;
-      }
-    });
+    }
   };
 
   createEffect(() => {
@@ -60,7 +85,7 @@ export function SixtyfoldStockChart(props: SixtyfoldStockChartProps): JSX.Elemen
     void props.appearance;
     void props.viewport;
     void props.viewportAnimated;
-    apply();
+    untrack(() => apply());
   });
   createEffect(() => {
     const onStats = props.onStats;
@@ -80,6 +105,7 @@ export function SixtyfoldStockChart(props: SixtyfoldStockChartProps): JSX.Elemen
     chart = instance;
     props.chartRef?.(instance);
     instance.setRendererErrorCallback((error) => {
+      rendererFailed = true;
       reportedRendererError = error;
       if (!disposed) props.onError?.(error);
     });
@@ -95,7 +121,6 @@ export function SixtyfoldStockChart(props: SixtyfoldStockChartProps): JSX.Elemen
         if (disposed || chart !== instance) return;
         ready = true;
         apply();
-        props.onReady?.(instance);
       })
       .catch((error) => {
         if (!disposed && error !== reportedRendererError) props.onError?.(error);

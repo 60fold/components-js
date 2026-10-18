@@ -8,7 +8,7 @@ import type { LineChart, LineDataUpdateOptions } from "@sixtyfold/line";
 export type LineData = TimeSeriesData | MultiSeriesData;
 
 export interface ChartHandle<TChart> {
-  /** The mounted chart instance, or null before mount and after cleanup. */
+  /** The mounted chart instance, or null before mount, while Activity is hidden, and after cleanup. */
   readonly chart: TChart | null;
 }
 
