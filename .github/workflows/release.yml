@@ -108,11 +108,10 @@ jobs:
             throw new Error("Stable releases require a version such as 1.0.0");
           }
           const sourceVersion = version.split("-rc.")[0];
-          const selectedPackages = packageDirectory === "all" ? packages : [packageDirectory];
-          for (const directory of selectedPackages) {
+          for (const directory of packages) {
             const manifest = JSON.parse(readFileSync(`packages/${directory}/package.json`, "utf8"));
             if (manifest.name !== `@sixtyfold/${directory}`) {
-              throw new Error(`Unexpected selected package name: ${manifest.name}`);
+              throw new Error(`Unexpected package name: ${manifest.name}`);
             }
             if (manifest.version !== sourceVersion) {
               throw new Error(`${manifest.name} is ${manifest.version}; expected reviewed source version ${sourceVersion}`);

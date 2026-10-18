@@ -104,6 +104,7 @@ test("release stamping changes only the selected package", async () => {
       `${JSON.stringify({
         name: `@sixtyfold/${directory}`,
         version: directory === "stock" ? "1.3.1" : `1.${index}.0`,
+        dependencies: directory === "stock" ? { "@sixtyfold/core": "workspace:^" } : undefined,
       })}\n`,
     );
   }
@@ -118,6 +119,7 @@ test("release stamping changes only the selected package", async () => {
     );
     if (directory === "stock") {
       assert.equal(manifest.version, "1.3.1-rc.1");
+      assert.deepEqual(manifest.dependencies, { "@sixtyfold/core": "^1.0.0" });
     } else {
       assert.equal(manifest.version, `1.${index}.0`);
     }

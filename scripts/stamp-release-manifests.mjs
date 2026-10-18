@@ -31,6 +31,18 @@ async function prepareStampedManifest({ root, directory, version }) {
   return { file, manifest };
 }
 
+function applyWorkspaceDependencySpecifier(manifest, field, name, specifier, targetVersion) {
+  if (specifier === "workspace:^") {
+    manifest[field][name] = `^${targetVersion}`;
+  } else if (specifier === "workspace:~") {
+    manifest[field][name] = `~${targetVersion}`;
+  } else if (specifier === "workspace:*") {
+    manifest[field][name] = targetVersion;
+  } else if (specifier.startsWith("workspace:")) {
+    throw new Error(`${manifest.name} has unsupported suite dependency ${name}@${specifier}`);
+  }
+}
+
 function resolveSuiteWorkspaceDependencies(manifest, version) {
   for (const field of [
     "dependencies",
@@ -42,15 +54,44 @@ function resolveSuiteWorkspaceDependencies(manifest, version) {
       if (!name.startsWith("@sixtyfold/") || typeof specifier !== "string") {
         continue;
       }
-      if (specifier === "workspace:^") {
-        manifest[field][name] = `^${version}`;
-      } else if (specifier === "workspace:~") {
-        manifest[field][name] = `~${version}`;
-      } else if (specifier === "workspace:*") {
-        manifest[field][name] = version;
-      } else if (specifier.startsWith("workspace:")) {
-        throw new Error(`${manifest.name} has unsupported suite dependency ${name}@${specifier}`);
+      applyWorkspaceDependencySpecifier(manifest, field, name, specifier, version);
+    }
+  }
+}
+
+async function resolveSelectedWorkspaceDependencies(root, manifest) {
+  const workspaceVersions = new Map();
+  for (const field of [
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "devDependencies",
+  ]) {
+    for (const [name, specifier] of Object.entries(manifest[field] ?? {})) {
+      if (!name.startsWith("@sixtyfold/") || typeof specifier !== "string") {
+        continue;
       }
+      if (!specifier.startsWith("workspace:")) continue;
+      const depDirectory = assertPackageDirectory(name.slice("@sixtyfold/".length));
+      if (packageNameForDirectory(depDirectory) !== name) {
+        throw new Error(`Unexpected Sixtyfold dependency: ${name}`);
+      }
+      if (!workspaceVersions.has(name)) {
+        const depManifest = await readJson(
+          path.join(root, "packages", depDirectory, "package.json"),
+        );
+        if (depManifest.name !== name) {
+          throw new Error(`${name}: workspace package identity is inconsistent`);
+        }
+        workspaceVersions.set(name, depManifest.version);
+      }
+      applyWorkspaceDependencySpecifier(
+        manifest,
+        field,
+        name,
+        specifier,
+        workspaceVersions.get(name),
+      );
     }
   }
 }
@@ -63,6 +104,7 @@ export async function stampReleaseManifests({ root, directory, version }) {
     directory,
     version,
   });
+  await resolveSelectedWorkspaceDependencies(root, manifest);
   await writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
