@@ -1927,4 +1927,304 @@ describe("Grid canonical runtime facade", () => {
       process.off("unhandledRejection", onUnhandled);
     }
   });
+
+  it("holds setData behind an active view surface commit lease before dispatching install", async () => {
+    const grid = new Grid(host(), { renderMode: "main" });
+    await grid.initialize();
+    await grid.setData(fixture([3, 1, 2, 4]));
+
+    const internals = grid as unknown as {
+      runtimeTransport: GridRuntimeTransport;
+    };
+    const transport = internals.runtimeTransport;
+    const postMessage = transport.postMessage.bind(transport);
+    let heldFinalize: Extract<GridRuntimeInputMessage, { type: "finalizeSurface" }> | null = null;
+    let installRequests = 0;
+    transport.postMessage = (message, transfer = []) => {
+      if (message.type === "install") installRequests++;
+      if (message.type === "finalizeSurface" && heldFinalize === null) {
+        heldFinalize = message;
+        return;
+      }
+      postMessage(message, transfer);
+    };
+
+    const viewPromise = grid.setView({
+      sort: [{ columnId: "value", direction: "ascending" }],
+    });
+    await vi.waitFor(() => expect(heldFinalize).not.toBeNull());
+
+    const replacement = grid.setData(fixture([9, 8]));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(installRequests).toBe(0);
+
+    postMessage(
+      heldFinalize as unknown as Extract<GridRuntimeInputMessage, { type: "finalizeSurface" }>,
+    );
+    await expect(viewPromise).resolves.toMatchObject({ status: "applied" });
+    await expect(replacement).resolves.toMatchObject({
+      datasetId: expect.any(String),
+    });
+    expect(installRequests).toBe(1);
+    expect(grid.getDiagnostics().physicalRowCount).toBe(2);
+    expect(grid.getDiagnostics().paintError).toBeNull();
+    grid.destroy();
+  });
+
+  it("preserves the focused cell as the range selection anchor on initial Shift+Arrow navigation", async () => {
+    const gridHost = host();
+    const grid = new Grid(gridHost, { renderMode: "main" });
+    await grid.initialize();
+    await grid.setData(fixture([10, 20, 30, 40]));
+
+    await expect(grid.focusCell({ rowId: 1, columnId: "value" })).resolves.toBe(true);
+    grid.clearSelection();
+    expect(grid.getSelection()).toBeNull();
+
+    const semantics = gridHost.querySelector<HTMLElement>('[role="grid"]')!;
+    semantics.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true }),
+    );
+
+    await vi.waitFor(() =>
+      expect(grid.getSelection()).toMatchObject({
+        kind: "range",
+        anchor: { rowId: 1, columnId: "value" },
+        focus: { rowId: 2, columnId: "value" },
+      }),
+    );
+    grid.destroy();
+  });
+
+  it("opens the cell editor on Enter or F2 while a keyboard navigation frame is still in flight", async () => {
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      editing: {
+        mode: "controlled",
+        onEditRequest: async () => ({ outcome: "rejected", code: "noop", message: "noop" }),
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData(fixture([10, 20, 30], true));
+    await grid.focusCell({ rowId: 0, columnId: "value" });
+
+    const semantics = gridHost.querySelector<HTMLElement>('[role="grid"]')!;
+    semantics.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    semantics.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true }));
+
+    await vi.waitFor(() =>
+      expect(gridHost.querySelector("[data-grid-editor-control]")).toBeTruthy(),
+    );
+    const control = gridHost.querySelector<HTMLInputElement>("[data-grid-editor-control]")!;
+    expect(control.value).toBe("20");
+    grid.destroy();
+  });
+
+  it("scrolls horizontally into view when committing a changed edit with Tab to an offscreen column", async () => {
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      columnWidth: 240,
+      minColumnWidth: 240,
+      editing: {
+        mode: "controlled",
+        onEditRequest: async (request) => {
+          const lease = await request.beginAuthoritativeCommit();
+          return lease.granted
+            ? { outcome: "accepted", leaseId: lease.leaseId }
+            : { outcome: "rejected", code: lease.reason, message: lease.reason };
+        },
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData({
+      length: 2,
+      columns: [
+        {
+          schema: { id: "c0", kind: "number", editable: true },
+          data: { kind: "number", values: { view: new Float64Array([1, 2]) } },
+        },
+        {
+          schema: { id: "c1", kind: "number", editable: true },
+          data: { kind: "number", values: { view: new Float64Array([3, 4]) } },
+        },
+        {
+          schema: { id: "c2", kind: "number", editable: true },
+          data: { kind: "number", values: { view: new Float64Array([5, 6]) } },
+        },
+        {
+          schema: { id: "c3", kind: "number", editable: true },
+          data: { kind: "number", values: { view: new Float64Array([7, 8]) } },
+        },
+      ],
+    });
+
+    await grid.focusCell({ rowId: 0, columnId: "c1" });
+    expect(grid.getViewport().scrollLeft).toBe(0);
+
+    const editor = await openNumberEditor(gridHost);
+    editor.value = "33";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+
+    await vi.waitFor(() => expect(grid.getFocusedCell()).toEqual({ rowId: 0, columnId: "c2" }));
+    expect(grid.getViewport().scrollLeft).toBeGreaterThan(0);
+    const scrollport = gridHost.querySelector<HTMLElement>("[data-grid-scrollport]")!;
+    expect(scrollport.scrollLeft).toBe(grid.getViewport().scrollLeft);
+    grid.destroy();
+  });
+
+  it("exits cleanly without validation errors when submitting an unchanged NaN or Infinity cell", async () => {
+    const onEditRequest = vi.fn();
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      editing: {
+        mode: "controlled",
+        onEditRequest,
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData(
+      fixture([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY], true),
+    );
+
+    await grid.focusCell({ rowId: 0, columnId: "value" });
+    const nanEditor = await openNumberEditor(gridHost);
+    expect(nanEditor.value).toBe("NaN");
+    nanEditor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(gridHost.querySelector("[data-grid-editor]")).toBeNull());
+    expect(onEditRequest).not.toHaveBeenCalled();
+
+    await grid.focusCell({ rowId: 1, columnId: "value" });
+    const infEditor = await openNumberEditor(gridHost);
+    expect(infEditor.value).toBe("Infinity");
+    infEditor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(gridHost.querySelector("[data-grid-editor]")).toBeNull());
+    expect(onEditRequest).not.toHaveBeenCalled();
+    grid.destroy();
+  });
+
+  it("disables a <select> editor control while host validation is pending", async () => {
+    let resolveDecision!: (decision: EditDecision) => void;
+    const decisionPromise = new Promise<EditDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      editing: {
+        mode: "controlled",
+        onEditRequest: () => decisionPromise,
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData({
+      length: 2,
+      columns: [
+        {
+          schema: { id: "flag", kind: "boolean", editable: true },
+          data: {
+            kind: "boolean",
+            encoding: "byte",
+            values: { view: new Uint8Array([0, 1]) },
+          },
+        },
+      ],
+    });
+
+    await grid.focusCell({ rowId: 0, columnId: "flag" });
+    gridHost
+      .querySelector('[role="grid"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true }));
+    await vi.waitFor(() =>
+      expect(gridHost.querySelector("[data-grid-editor-control]")).toBeTruthy(),
+    );
+    const select = gridHost.querySelector<HTMLSelectElement>("[data-grid-editor-control]")!;
+    expect(select).toBeInstanceOf(HTMLSelectElement);
+    expect(select.disabled).toBe(false);
+
+    select.value = "true";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    select.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    await vi.waitFor(() => expect(select.disabled).toBe(true));
+    resolveDecision({ outcome: "rejected", code: "denied", message: "Denied" });
+    await vi.waitFor(() => expect(select.disabled).toBe(false));
+    grid.destroy();
+  });
+
+  it("cancels an open pre-commit editor on programmatic focusCell and scrollToCell", async () => {
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      editing: {
+        mode: "controlled",
+        onEditRequest: async () => ({ outcome: "rejected", code: "noop", message: "noop" }),
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData(fixture([1, 2, 3], true));
+
+    await grid.focusCell({ rowId: 0, columnId: "value" });
+    await openNumberEditor(gridHost);
+    expect(gridHost.querySelector("[data-grid-editor]")).not.toBeNull();
+
+    await expect(grid.focusCell({ rowId: 1, columnId: "label" })).resolves.toBe(true);
+    expect(gridHost.querySelector("[data-grid-editor]")).toBeNull();
+
+    await openNumberEditor(gridHost);
+    expect(gridHost.querySelector("[data-grid-editor]")).not.toBeNull();
+
+    await expect(grid.scrollToCell({ rowId: 2, columnId: "value" })).resolves.toBe(true);
+    expect(gridHost.querySelector("[data-grid-editor]")).toBeNull();
+    grid.destroy();
+  });
+
+  it("snapshots the setView spec synchronously before awaiting async barriers", async () => {
+    let settleEdit!: (decision: EditDecision) => void;
+    const editDecision = new Promise<EditDecision>((resolve) => {
+      settleEdit = resolve;
+    });
+    const gridHost = host();
+    const grid = new Grid(gridHost, {
+      renderMode: "main",
+      editing: {
+        mode: "controlled",
+        onEditRequest: () => editDecision,
+        onReconcileRequired: vi.fn(),
+      },
+    });
+    await grid.initialize();
+    await grid.setData(fixture([3, 1, 2], true));
+    await grid.focusCell({ rowId: 0, columnId: "value" });
+    await openAndSubmitNumber(gridHost, "9");
+
+    const mutableSort = [
+      { columnId: "value", direction: "ascending" as "ascending" | "descending" },
+    ];
+    const mutableSpec = { sort: mutableSort };
+    const viewPromise = grid.setView(mutableSpec);
+    // Mutate caller-owned spec immediately while setView is blocked on outstandingEdit.settled.
+    mutableSort[0]!.direction = "descending";
+
+    settleEdit({ outcome: "rejected", code: "abort", message: "cancelled" });
+    const result = await viewPromise;
+    expect(result).toMatchObject({
+      status: "applied",
+      state: {
+        spec: {
+          sort: [{ columnId: "value", direction: "ascending" }],
+        },
+      },
+    });
+    grid.destroy();
+  });
 });

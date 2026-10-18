@@ -1152,47 +1152,59 @@ export function createGridRuntimeEngine(callbacks: GridRuntimeEngineCallbacks): 
     }
     const startedAt = performance.now();
     try {
-      const source = {
-        datasetId: current.store.datasetId,
-        rowCount: current.store.rowCount,
-        columnIndexOf: (columnId: string) => current.store.columnIndexOf(columnId),
-        columnScalarTypeAt: (column: number | string) => current.store.columnScalarTypeAt(column),
-        cellAt: (rowIndex: number, column: number | string) =>
-          current.store.stagedCellAt(stagedPatch, rowIndex, column),
-        typedColumnAt: (column: number | string) =>
-          current.store.typedColumnAt(column, stagedPatch),
-      };
-      const tentativeViewRevision = current.viewRevision + 1;
-      const result = await buildGridViewCandidateAsync(source, current.spec, {
-        requestId: 0,
-        viewRevision: tentativeViewRevision,
-        shouldCancel: () => disposed || editReservation !== reservation,
-        onProgress: (progress) => {
-          if (disposed || editReservation !== reservation) return;
-          send({ type: "editProgress", operationId: message.operationId, ...progress });
-        },
-      });
-      if (result.status !== "complete" || disposed || editReservation !== reservation) return;
-      const candidate = publishGridViewCandidate(result.candidate, {
-        datasetId: current.descriptor.datasetId,
-        requestId: 0,
-        viewRevision: tentativeViewRevision,
-      });
-      if (!candidate) throw new Error("The Grid edit view candidate could not be published.");
-      const viewChanged = !viewMappingsEqual(current, candidate);
-      const viewRevision = viewChanged ? tentativeViewRevision : current.viewRevision;
-      const view =
-        viewRevision === candidate.viewRevision
-          ? candidate
-          : createPublishedGridView({
-              datasetId: candidate.datasetId,
-              requestId: candidate.requestId,
-              viewRevision,
-              physicalRowCount: candidate.physicalRowCount,
-              physicalRows: candidate.physicalRows,
-              filterBitmap: candidate.filterBitmap,
-              spec: candidate.spec,
-            });
+      const hasIdentityView =
+        current.view === null &&
+        !current.spec.filter &&
+        (!current.spec.sort || current.spec.sort.length === 0);
+      let view: GridPublishedView | null = null;
+      let viewChanged = false;
+      let viewRevision = current.viewRevision;
+      if (!hasIdentityView) {
+        const source = {
+          datasetId: current.store.datasetId,
+          rowCount: current.store.rowCount,
+          columnIndexOf: (columnId: string) => current.store.columnIndexOf(columnId),
+          columnScalarTypeAt: (column: number | string) => current.store.columnScalarTypeAt(column),
+          cellAt: (rowIndex: number, column: number | string) =>
+            current.store.stagedCellAt(stagedPatch, rowIndex, column),
+          typedColumnAt: (column: number | string) =>
+            current.store.typedColumnAt(column, stagedPatch),
+        };
+        const tentativeViewRevision = current.viewRevision + 1;
+        const result = await buildGridViewCandidateAsync(source, current.spec, {
+          requestId: 0,
+          viewRevision: tentativeViewRevision,
+          shouldCancel: () => disposed || editReservation !== reservation,
+          onProgress: (progress) => {
+            if (disposed || editReservation !== reservation) return;
+            send({ type: "editProgress", operationId: message.operationId, ...progress });
+          },
+        });
+        if (result.status !== "complete" || disposed || editReservation !== reservation) {
+          current.store.discardCellPatch(stagedPatch);
+          return;
+        }
+        const candidate = publishGridViewCandidate(result.candidate, {
+          datasetId: current.descriptor.datasetId,
+          requestId: 0,
+          viewRevision: tentativeViewRevision,
+        });
+        if (!candidate) throw new Error("The Grid edit view candidate could not be published.");
+        viewChanged = !viewMappingsEqual(current, candidate);
+        viewRevision = viewChanged ? tentativeViewRevision : current.viewRevision;
+        view =
+          viewRevision === candidate.viewRevision
+            ? candidate
+            : createPublishedGridView({
+                datasetId: candidate.datasetId,
+                requestId: candidate.requestId,
+                viewRevision,
+                physicalRowCount: candidate.physicalRowCount,
+                physicalRows: candidate.physicalRows,
+                filterBitmap: candidate.filterBitmap,
+                spec: candidate.spec,
+              });
+      }
       const descriptor = {
         ...current.descriptor,
         dataRevision: current.descriptor.dataRevision + 1,
@@ -1227,7 +1239,9 @@ export function createGridRuntimeEngine(callbacks: GridRuntimeEngineCallbacks): 
         stagedPatch,
       };
       const buildDurationMs = Math.max(0, performance.now() - startedAt);
-      const editedRowIndex = view.viewOrdinalOfRowId(reservation.baseline.rowId, current.store);
+      const editedRowIndex = view
+        ? view.viewOrdinalOfRowId(reservation.baseline.rowId, current.store)
+        : current.store.rowIndexOfRowId(reservation.baseline.rowId);
       pendingEdit = {
         operationId: message.operationId,
         leaseId: message.leaseId,
@@ -1242,7 +1256,7 @@ export function createGridRuntimeEngine(callbacks: GridRuntimeEngineCallbacks): 
         datasetId: descriptor.datasetId,
         dataRevision: descriptor.dataRevision,
         viewRevision,
-        rowCount: view.rowCount,
+        rowCount: view?.rowCount ?? current.store.rowCount,
         editedRowIndex,
         viewChanged,
         buildDurationMs,

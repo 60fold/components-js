@@ -202,7 +202,8 @@ export class GridEditorOverlay {
     this.status.textContent = message;
     this.disabled = state !== "editing";
     const afterLease = state === "committing" || state === "applying";
-    this.control.disabled = afterLease;
+    this.control.disabled =
+      afterLease || (state === "pending" && this.control instanceof HTMLSelectElement);
     if (this.control instanceof HTMLInputElement) this.control.readOnly = state === "pending";
     if (state === "pending") this.control.setAttribute("aria-disabled", "true");
     else this.control.removeAttribute("aria-disabled");

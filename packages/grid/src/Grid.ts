@@ -703,12 +703,23 @@ export class Grid {
     try {
       await this.initialize();
       this.assertLive();
-      if (
+      while (
         this.outstandingEdit?.phase === "committing" ||
-        this.outstandingEdit?.phase === "applying"
+        this.outstandingEdit?.phase === "applying" ||
+        this.paintCommitLease
       ) {
-        await this.outstandingEdit.settled;
+        if (
+          this.outstandingEdit?.phase === "committing" ||
+          this.outstandingEdit?.phase === "applying"
+        ) {
+          await this.outstandingEdit.settled;
+        } else if (this.paintCommitLease) {
+          await this.paintCommitLease.settled;
+        }
         this.assertLive();
+        if (this.pendingInstall !== pending || abortController.signal.aborted) {
+          return result;
+        }
       }
       if (this.pendingInstall !== pending || abortController.signal.aborted) {
         return result;
@@ -769,6 +780,7 @@ export class Grid {
 
   private async setViewOperation(spec: GridViewSpec): Promise<GridViewApplyResult> {
     this.assertLive();
+    const acceptedSpec = snapshotViewSpec(spec);
     await this.initialize();
     this.assertLive();
     if (this.editingLocked) {
@@ -782,12 +794,11 @@ export class Grid {
       this.outstandingEdit?.phase === "applying"
     ) {
       await this.outstandingEdit.settled;
-      return this.setView(spec);
+      return this.setView(acceptedSpec);
     }
     this.cancelEdit();
     const dataset = this.dataset;
     if (!dataset) throw new Error("Grid data must be installed before setting a view.");
-    const acceptedSpec = snapshotViewSpec(spec);
     const barrier = this.paintCommitLease?.settled;
     if (barrier) {
       await barrier;
@@ -1007,6 +1018,9 @@ export class Grid {
     this.throwIfRuntimeFailed();
     const target = await this.resolveCell(cell);
     if (!target || this.destroyed) return false;
+    if (this.activeEditor && (!this.outstandingEdit || this.outstandingEdit.phase === "pending")) {
+      this.cancelEdit();
+    }
     this.moveFocusResolved(target, false, "api", options.scrollIntoView !== false);
     this.semantics.element.focus({ preventScroll: true });
     return true;
@@ -1017,7 +1031,11 @@ export class Grid {
     this.throwIfRuntimeFailed();
     const target = await this.resolveCell(cell);
     if (!target || this.destroyed) return false;
+    if (this.activeEditor && (!this.outstandingEdit || this.outstandingEdit.phase === "pending")) {
+      this.cancelEdit();
+    }
     this.scrollResolvedCell(target, options);
+    if (this.activeEditor) this.positionActiveEditor();
     this.scheduleRender("api");
     return true;
   }
@@ -1428,15 +1446,18 @@ export class Grid {
       }
       return;
     }
-    if (!columnLayout || this.viewState.rowCount === 0 || this.columnCount() === 0) return;
     if ((event.key === "Enter" || event.key === "F2") && !event.altKey && !event.metaKey) {
-      const rowId = this.visibleRowIds.get(this.focusedRowIndex);
+      const editorLayout =
+        columnLayout ?? (this.columnLayout.widths.length > 0 ? this.columnLayout : null);
+      if (!editorLayout || this.viewState.rowCount === 0 || this.columnCount() === 0) return;
+      const rowId = this.visibleRowIds.get(this.focusedRowIndex) ?? this.focusedCell?.rowId;
       if (rowId !== undefined) {
         event.preventDefault();
         void this.openEditor(this.focusedRowIndex, this.focusedColumnIndex, rowId);
       }
       return;
     }
+    if (!columnLayout || this.viewState.rowCount === 0 || this.columnCount() === 0) return;
     const pageRows = Math.max(
       1,
       Math.floor((this.viewportHeight - this.layout.headerHeight) / this.layout.rowHeight),
@@ -1501,9 +1522,17 @@ export class Grid {
     scrollIntoView: boolean,
   ): void {
     if (!this.dataset) return;
-    if (!extend || !this.selection) {
+    if (!extend) {
       this.selectionAnchorRowIndex = target.rowIndex;
       this.selectionAnchorColumnIndex = target.columnIndex;
+    } else if (!this.selection) {
+      if (this.focusedRowIndex >= 0 && this.focusedColumnIndex >= 0) {
+        this.selectionAnchorRowIndex = this.focusedRowIndex;
+        this.selectionAnchorColumnIndex = this.focusedColumnIndex;
+      } else {
+        this.selectionAnchorRowIndex = target.rowIndex;
+        this.selectionAnchorColumnIndex = target.columnIndex;
+      }
     }
     const anchorRow =
       extend && this.selectionAnchorRowIndex >= 0 ? this.selectionAnchorRowIndex : target.rowIndex;
@@ -1514,7 +1543,9 @@ export class Grid {
     const anchorRowId =
       anchorRow === target.rowIndex
         ? target.rowId
-        : (this.selection?.anchor.rowId ?? this.visibleRowIds.get(anchorRow));
+        : (this.selection?.anchor.rowId ??
+          (anchorRow === this.focusedRowIndex ? this.focusedCell?.rowId : undefined) ??
+          this.visibleRowIds.get(anchorRow));
     if (anchorRowId === undefined) return;
     this.focusedRowIndex = target.rowIndex;
     this.focusedColumnIndex = target.columnIndex;
@@ -1676,10 +1707,11 @@ export class Grid {
     rowCount: number,
     logicalScrollTop: number,
     columnLayout: GridColumnLayout,
+    scrollLeft = this.scrollport.scrollLeft,
   ): GridViewport {
     const range = visibleGridRange(
       logicalScrollTop,
-      this.scrollport.scrollLeft,
+      scrollLeft,
       this.dataViewportWidth(),
       this.viewportHeight,
       rowCount,
@@ -1695,7 +1727,7 @@ export class Grid {
       columnStart: range.columns.start,
       columnEnd: range.columns.end,
       scrollTop: logicalScrollTop,
-      scrollLeft: this.scrollport.scrollLeft,
+      scrollLeft,
     };
   }
 
@@ -1746,6 +1778,7 @@ export class Grid {
     let focusedRowIndex: number;
     let focusedColumnIndex: number;
     let logicalTop: number;
+    let scrollLeft = this.scrollport.scrollLeft;
     let selection: GridRangeSelection | null;
     let source = this.pendingViewportSource ?? "resize";
 
@@ -1787,6 +1820,25 @@ export class Grid {
               this.layout.rowHeight,
               logicalTop,
               Math.max(1, this.viewportHeight - this.layout.headerHeight),
+              "nearest",
+            ),
+          ),
+        );
+      }
+      if (focusedColumnIndex >= 0) {
+        const maxLeft = Math.max(
+          0,
+          this.rowNumberWidth + columnLayout.totalWidth - this.viewportWidth,
+        );
+        scrollLeft = Math.max(
+          0,
+          Math.min(
+            maxLeft,
+            alignedScrollOffset(
+              columnLayout.offsets[focusedColumnIndex] ?? 0,
+              columnLayout.widths[focusedColumnIndex] ?? this.layout.columnWidth,
+              scrollLeft,
+              Math.max(1, this.dataViewportWidth()),
               "nearest",
             ),
           ),
@@ -1862,7 +1914,7 @@ export class Grid {
     this.pendingSurfaceIntent = null;
     const range = visibleGridRange(
       logicalTop,
-      this.scrollport.scrollLeft,
+      scrollLeft,
       this.dataViewportWidth(),
       this.viewportHeight,
       rowCount,
@@ -1878,6 +1930,7 @@ export class Grid {
       rowCount,
       logicalTop,
       columnLayout,
+      scrollLeft,
     );
     const pixelRatio = Math.min(4, Math.max(1, window.devicePixelRatio || 1));
     const telemetry: SurfaceTelemetryTrace | null =
@@ -1946,7 +1999,7 @@ export class Grid {
         viewportHeight: this.viewportHeight,
         pixelRatio,
         scrollTop: logicalTop,
-        scrollLeft: this.scrollport.scrollLeft,
+        scrollLeft,
         range,
         layout: this.layout,
         columnLayout,
@@ -2691,6 +2744,7 @@ export class Grid {
         surface.viewport.scrollTop,
         this.scrollGeometry(),
       );
+      this.scrollport.scrollLeft = surface.viewport.scrollLeft;
       this.updateSurfaceTransform();
       if (hadSelection) {
         this.notifyHost(() =>
@@ -3533,7 +3587,15 @@ export class Grid {
     if (this.destroyed || exitTarget.kind === "external") return;
 
     this.semantics.element.focus({ preventScroll: true });
-    if (publicationAlreadyFocused && exitTarget.kind === "grid") return;
+    if (publicationAlreadyFocused && exitTarget.kind === "grid") {
+      if (this.focusedRowIndex >= 0 && this.focusedColumnIndex >= 0) {
+        this.scrollResolvedCell(
+          { rowIndex: this.focusedRowIndex, columnIndex: this.focusedColumnIndex },
+          {},
+        );
+      }
+      return;
+    }
 
     const target =
       exitTarget.kind === "cell"
@@ -3553,6 +3615,17 @@ export class Grid {
     const editor = this.activeEditor;
     const editing = this.options.editing;
     if (!editor || !editing || this.outstandingEdit || this.editingLocked || !this.dataset) return;
+    if (
+      !raw.explicitNull &&
+      typeof editor.previousValue === "number" &&
+      !Number.isFinite(editor.previousValue) &&
+      raw.raw.trim() === String(editor.previousValue)
+    ) {
+      editor.navigation = navigation;
+      editor.exitTarget = exitTarget;
+      this.finishEditorExit(editor, false);
+      return;
+    }
     const operationId = `sixtyfold:grid:edit:${(++this.nextEditOperationId).toString(36)}`;
     editor.navigation = navigation;
     editor.exitTarget = exitTarget;

@@ -531,6 +531,10 @@ export class GridDataStore {
     return active.rowIndexById?.get(rowId) ?? -1;
   }
 
+  rowIndexOfRowId(rowId: RowId): number {
+    return this.rowIndexOf(rowId);
+  }
+
   cellAt(rowIndex: number, column: number | string): CellScalar | null {
     const active = requireActive(this.active);
     assertRowIndex(rowIndex, active.length);

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGridColumnLayout, type VisibleGridRange } from "../rendering/layout.js";
 import type { GridPaintPalette } from "../rendering/paintProtocol.js";
 import type { GridData, Utf8Buffers } from "../types.js";
+import { GridViewMapping } from "../view/activeView.js";
 import { createGridRuntimeEngine } from "./gridRuntimeEngine.js";
 import type {
   GridRuntimeInputMessage,
@@ -1127,5 +1128,168 @@ describe("Grid canonical runtime engine", () => {
     await expect(harness.next("disposed")).resolves.toMatchObject({ type: "disposed" });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(harness.messages).toEqual([]);
+  });
+
+  it("discards the staged patch when an edit is cancelled during an in-flight view build", async () => {
+    const harness = new RuntimeHarness();
+    harness.send({ type: "install", requestId: 60, dataRevision: 1, data: data(true) });
+    const install = await harness.next("installReady", (message) => message.requestId === 60);
+    await publishInstall(harness, install, 60);
+    const datasetId = install.descriptor.datasetId;
+
+    // Publish a sorted view so applyEdit executes buildGridViewCandidateAsync.
+    harness.send({
+      type: "setView",
+      requestId: 61,
+      datasetId,
+      viewRevision: 1,
+      spec: { sort: [{ columnId: "value", direction: "ascending" }] },
+    });
+    await harness.next("viewReady", (message) => message.requestId === 61);
+    harness.send(
+      surface(datasetId, {
+        surfaceId: 61,
+        dataRevision: 1,
+        viewRevision: 1,
+        target: { kind: "view", requestId: 61 },
+      }),
+    );
+    await harness.next("surfaceReady", (message) => message.surfaceId === 61);
+    harness.send({ type: "finalizeSurface", surfaceId: 61, commitToken: "surface:61" });
+    await harness.next("published", (message) => message.surfaceId === 61);
+
+    harness.send({
+      type: "reserveEdit",
+      operationId: "edit:abort-mid-build",
+      datasetId,
+      rowId: 10,
+      columnId: "value",
+      cellRevision: 0,
+      previousValue: 1,
+      finalValue: 99,
+    });
+    const firstLease = await harness.next(
+      "editLease",
+      (message) => message.operationId === "edit:abort-mid-build",
+    );
+    if (!firstLease.result.granted) throw new Error("Expected first edit lease.");
+
+    // Start applyEdit and immediately discardEdit while buildGridViewCandidateAsync is suspended.
+    harness.send({
+      type: "applyEdit",
+      operationId: "edit:abort-mid-build",
+      leaseId: firstLease.result.leaseId,
+    });
+    harness.send({
+      type: "discardEdit",
+      operationId: "edit:abort-mid-build",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // A subsequent edit on the same store must succeed because stagedPatch was cleaned up.
+    harness.send({
+      type: "reserveEdit",
+      operationId: "edit:after-abort",
+      datasetId,
+      rowId: 10,
+      columnId: "value",
+      cellRevision: 0,
+      previousValue: 1,
+      finalValue: 42,
+    });
+    const secondLease = await harness.next(
+      "editLease",
+      (message) => message.operationId === "edit:after-abort",
+    );
+    if (!secondLease.result.granted) throw new Error("Expected second edit lease.");
+    harness.send({
+      type: "applyEdit",
+      operationId: "edit:after-abort",
+      leaseId: secondLease.result.leaseId,
+    });
+    const editReady = await harness.next(
+      "editReady",
+      (message) => message.operationId === "edit:after-abort",
+    );
+    expect(editReady).toMatchObject({
+      operationId: "edit:after-abort",
+      dataRevision: 2,
+      editedRowIndex: 2,
+      rowCount: 3,
+      viewChanged: true,
+    });
+  });
+
+  it("keeps the identity view without allocating a view permutation on unfiltered, unsorted edits", async () => {
+    const viewOrdinalSpy = vi.spyOn(GridViewMapping.prototype, "viewOrdinalOfRowId");
+    const physicalRowAtSpy = vi.spyOn(GridViewMapping.prototype, "physicalRowAt");
+    try {
+      const harness = new RuntimeHarness();
+      harness.send({ type: "install", requestId: 70, dataRevision: 1, data: data(true) });
+      const install = await harness.next("installReady", (message) => message.requestId === 70);
+      await publishInstall(harness, install, 70);
+      const datasetId = install.descriptor.datasetId;
+
+      harness.send({
+        type: "reserveEdit",
+        operationId: "edit:identity-view",
+        datasetId,
+        rowId: 20,
+        columnId: "value",
+        cellRevision: 0,
+        previousValue: 3,
+        finalValue: 30,
+      });
+      const lease = await harness.next(
+        "editLease",
+        (message) => message.operationId === "edit:identity-view",
+      );
+      if (!lease.result.granted) throw new Error("Expected edit lease.");
+
+      harness.send({
+        type: "applyEdit",
+        operationId: "edit:identity-view",
+        leaseId: lease.result.leaseId,
+      });
+      const ready = await harness.next(
+        "editReady",
+        (message) => message.operationId === "edit:identity-view",
+      );
+      expect(ready).toMatchObject({
+        dataRevision: 2,
+        viewRevision: 0,
+        editedRowIndex: 1,
+        rowCount: 3,
+        viewChanged: false,
+      });
+
+      harness.send(
+        surface(datasetId, {
+          surfaceId: 71,
+          dataRevision: 2,
+          viewRevision: 0,
+          target: { kind: "edit", operationId: "edit:identity-view" },
+        }),
+      );
+      await harness.next("surfaceReady", (message) => message.surfaceId === 71);
+      harness.send({ type: "finalizeSurface", surfaceId: 71, commitToken: "surface:71" });
+      await harness.next("published", (message) => message.surfaceId === 71);
+
+      harness.send({ type: "resolveRow", queryId: 701, datasetId, rowId: 20 });
+      await expect(
+        harness.next("resolvedRow", (message) => message.queryId === 701),
+      ).resolves.toMatchObject({ physicalRow: 1, viewOrdinal: 1 });
+
+      harness.send({ type: "resolveOrdinal", queryId: 702, datasetId, viewOrdinal: 1 });
+      await expect(
+        harness.next("resolvedOrdinal", (message) => message.queryId === 702),
+      ).resolves.toMatchObject({ physicalRow: 1, viewOrdinal: 1, rowId: 20 });
+
+      expect(viewOrdinalSpy).not.toHaveBeenCalled();
+      expect(physicalRowAtSpy).not.toHaveBeenCalled();
+    } finally {
+      viewOrdinalSpy.mockRestore();
+      physicalRowAtSpy.mockRestore();
+    }
   });
 });
