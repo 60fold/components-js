@@ -384,4 +384,31 @@ describe("line.svelte readiness data options", () => {
       expect(onReady).toHaveBeenCalledOnce();
     },
   );
+
+  it("retries initial data installation when dataUpdateOptions changes after a failed attempt", async () => {
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    const data = dataFor("line");
+    const chart = render("line", {
+      data,
+      dataUpdateOptions: { preservePreviousFrame: true },
+      onReady,
+      onError,
+    });
+    const error = new Error("rejected dataUpdateOptions");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw error;
+    });
+
+    await becomeReady(chart);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(onReady).not.toHaveBeenCalled();
+
+    const nextOptions = { preservePreviousFrame: false };
+    setProps({ dataUpdateOptions: nextOptions });
+
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(chart.callsTo("setData")[0]?.args).toEqual([props.data, props.dataUpdateOptions]);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+  });
 });

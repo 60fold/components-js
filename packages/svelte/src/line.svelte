@@ -53,7 +53,15 @@
 
   // The arguments are the reactive dependencies; the body reads them directly
   // so a single change installs data, appearance, and viewport in one update.
-  $: applyReactiveProps(ready, chart, data, appearance, viewport, viewportAnimated);
+  $: applyReactiveProps(
+    ready,
+    chart,
+    data,
+    dataUpdateOptions,
+    appearance,
+    viewport,
+    viewportAnimated,
+  );
   $: if (chart) {
     chart.setStatsCallback(onStats ? (stats) => onStats?.(stats) : null, {
       intervalMs: statsIntervalMs,
@@ -67,6 +75,7 @@
     isReady: boolean,
     instance: LineChart | null,
     nextData: LineData | undefined,
+    nextDataUpdateOptions: LineDataUpdateOptions | undefined,
     nextAppearance: DeepPartial<LineAppearanceOptions> | undefined,
     nextViewport: Partial<Viewport> | undefined,
     animated: boolean | undefined,
@@ -75,7 +84,7 @@
     try {
       instance.batch(() => {
         if (nextData && nextData !== appliedData) {
-          installLineData(instance, nextData, dataUpdateOptions);
+          installLineData(instance, nextData, nextDataUpdateOptions);
           appliedData = nextData;
         }
         if (nextAppearance && nextAppearance !== appliedAppearance) {
