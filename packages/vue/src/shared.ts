@@ -9,6 +9,18 @@ export type LineData = TimeSeriesData | MultiSeriesData;
 
 export type StatsListener<T> = ((stats: T) => void) | ((stats: T) => void)[] | null;
 
+export function hasStatsListener<T>(listener: StatsListener<T> | undefined): boolean {
+  return (
+    typeof listener === "function" ||
+    (Array.isArray(listener) && listener.some((fn) => typeof fn === "function"))
+  );
+}
+
+export function clearUnconsumedStatsOnce(vm: unknown): void {
+  const emitted = (vm as { emitted?: Record<string, unknown> | null } | null)?.emitted;
+  if (emitted) delete emitted.onStats;
+}
+
 export function installLineData(
   chart: LineChart,
   data: LineData,

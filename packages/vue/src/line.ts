@@ -19,7 +19,14 @@ import {
   type LineDataUpdateOptions,
   type SeriesVisibilityChangeEvent,
 } from "@sixtyfold/line";
-import { hasViewport, installLineData, type LineData, type StatsListener } from "./shared.js";
+import {
+  clearUnconsumedStatsOnce,
+  hasStatsListener,
+  hasViewport,
+  installLineData,
+  type LineData,
+  type StatsListener,
+} from "./shared.js";
 
 /** Vue host for a Sixtyfold line chart. The component is SSR-safe and emits the underlying chart on readiness. */
 export const SixtyfoldLineChart = defineComponent({
@@ -65,7 +72,9 @@ export const SixtyfoldLineChart = defineComponent({
     const syncStatsCallback = (): void => {
       const instance = chart.value;
       if (!instance || disposed) return;
-      const enabled = Boolean(props.onStats || (props.onStatsOnce && !statsOnceConsumed));
+      const enabled =
+        hasStatsListener(props.onStats) ||
+        (hasStatsListener(props.onStatsOnce) && !statsOnceConsumed);
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
@@ -75,10 +84,14 @@ export const SixtyfoldLineChart = defineComponent({
         enabled
           ? (stats) => {
               if (disposed) return;
-              if (props.onStatsOnce) statsOnceConsumed = true;
+              const hadOnceListener = hasStatsListener(props.onStatsOnce);
+              if (hadOnceListener) statsOnceConsumed = true;
               try {
                 vm?.emit("stats", stats);
               } finally {
+                if (!hadOnceListener && !statsOnceConsumed) {
+                  clearUnconsumedStatsOnce(vm);
+                }
                 syncStatsCallback();
               }
             }
@@ -137,7 +150,9 @@ export const SixtyfoldLineChart = defineComponent({
         if (!disposed) emit("error", error);
       });
       syncStatsCallback();
-      instance.setSeriesVisibilityCallback((event) => emit("seriesVisibilityChange", event));
+      instance.setSeriesVisibilityCallback((event) => {
+        if (!disposed) emit("seriesVisibilityChange", event);
+      });
       void instance
         .initialize()
         .then(() => {
@@ -151,7 +166,14 @@ export const SixtyfoldLineChart = defineComponent({
     });
 
     watch(
-      () => [props.data, props.appearance, props.viewport, props.viewportAnimated] as const,
+      () =>
+        [
+          props.data,
+          props.dataUpdateOptions,
+          props.appearance,
+          props.viewport,
+          props.viewportAnimated,
+        ] as const,
       () => applyReactiveProps(),
     );
     watch(

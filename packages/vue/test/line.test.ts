@@ -321,4 +321,43 @@ describe("SixtyfoldLineChart", () => {
     expect(canvas?.getAttribute("role")).toBe("img");
     expect(canvas?.hasAttribute("tabindex")).toBe(false);
   });
+
+  it("retries initial data installation when dataUpdateOptions changes after a failed attempt", async () => {
+    const onReady = vi.fn();
+    const onError = vi.fn();
+    const data = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+    const chart = mount({
+      data,
+      dataUpdateOptions: { preservePreviousFrame: true },
+      onReady,
+      onError,
+    });
+    const error = new Error("rejected dataUpdateOptions");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw error;
+    });
+
+    await becomeReady(chart);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error);
+    expect(onReady).not.toHaveBeenCalled();
+
+    const nextOptions = { preservePreviousFrame: false };
+    await setProps({ dataUpdateOptions: nextOptions });
+
+    expect(chart.callsTo("setData")).toHaveLength(1);
+    expect(chart.callsTo("setData")[0]?.args).toEqual([data, nextOptions]);
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+  });
+
+  it("does not emit seriesVisibilityChange after unmount", async () => {
+    const onSeriesVisibilityChange = vi.fn();
+    const chart = mount({ onSeriesVisibilityChange });
+    await becomeReady(chart);
+    const callback = chart.seriesVisibilityCallback;
+
+    unmount();
+    callback?.({ seriesIndex: 0, visible: false });
+
+    expect(onSeriesVisibilityChange).not.toHaveBeenCalled();
+  });
 });

@@ -18,7 +18,12 @@ import {
   type StockChartOptions,
   type StockChartStats,
 } from "@sixtyfold/stock";
-import { hasViewport, type StatsListener } from "./shared.js";
+import {
+  clearUnconsumedStatsOnce,
+  hasStatsListener,
+  hasViewport,
+  type StatsListener,
+} from "./shared.js";
 
 /** Vue host for a Sixtyfold stock chart. */
 export const SixtyfoldStockChart = defineComponent({
@@ -61,7 +66,9 @@ export const SixtyfoldStockChart = defineComponent({
     const syncStatsCallback = (): void => {
       const instance = chart.value;
       if (!instance || disposed) return;
-      const enabled = Boolean(props.onStats || (props.onStatsOnce && !statsOnceConsumed));
+      const enabled =
+        hasStatsListener(props.onStats) ||
+        (hasStatsListener(props.onStatsOnce) && !statsOnceConsumed);
       if (enabled === statsEnabled && props.statsIntervalMs === statsInterval) return;
       statsEnabled = enabled;
       statsInterval = props.statsIntervalMs;
@@ -71,10 +78,14 @@ export const SixtyfoldStockChart = defineComponent({
         enabled
           ? (stats) => {
               if (disposed) return;
-              if (props.onStatsOnce) statsOnceConsumed = true;
+              const hadOnceListener = hasStatsListener(props.onStatsOnce);
+              if (hadOnceListener) statsOnceConsumed = true;
               try {
                 vm?.emit("stats", stats);
               } finally {
+                if (!hadOnceListener && !statsOnceConsumed) {
+                  clearUnconsumedStatsOnce(vm);
+                }
                 syncStatsCallback();
               }
             }

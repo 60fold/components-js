@@ -265,4 +265,23 @@ describe.each(adapters)("$name stats listeners", (adapter) => {
     await setProps({ onStats: undefined });
     expect(chart.statsCallback).toBeNull();
   });
+
+  it("treats empty listener arrays as disabled without consuming onStatsOnce", async () => {
+    const chart = mount(adapter, { onStats: [], onStatsOnce: [] });
+    await settle();
+    expect(chart.statsCallback).toBeNull();
+
+    const regular = vi.fn();
+    await setProps({ onStats: [regular], onStatsOnce: [] });
+    expect(chart.statsCallback).toBeTypeOf("function");
+    chart.statsCallback?.({ fps: 60 });
+    expect(regular).toHaveBeenCalledExactlyOnceWith({ fps: 60 });
+
+    const once = vi.fn();
+    await setProps({ onStats: [], onStatsOnce: [once] });
+    expect(chart.statsCallback).toBeTypeOf("function");
+    chart.statsCallback?.({ fps: 59 });
+    expect(once).toHaveBeenCalledExactlyOnceWith({ fps: 59 });
+    expect(chart.statsCallback).toBeNull();
+  });
 });
