@@ -188,13 +188,20 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
   private syncStatsCallback(): void {
     const chart = this.chart;
     if (!chart || this.destroyed) return;
-    const enabled = this.stats.observed;
+    const enabled = !this.stats.closed && !this.stats.isStopped && this.stats.observed;
     if (enabled === this.statsEnabled && this.statsIntervalMs === this.statsInterval) return;
     this.statsEnabled = enabled;
     this.statsInterval = this.statsIntervalMs;
-    chart.setStatsCallback(enabled ? (value) => this.stats.emit(value) : null, {
-      intervalMs: this.statsIntervalMs,
-    });
+    chart.setStatsCallback(
+      enabled
+        ? (value) => {
+            if (!this.destroyed) this.stats.emit(value);
+          }
+        : null,
+      {
+        intervalMs: this.statsIntervalMs,
+      },
+    );
   }
 
   /** Installs every reactive input in a single engine update. Each dataset
@@ -224,7 +231,11 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
     }
     if (!this.destroyed && !this.rendererFailed && this.chart === chart && !this.readyNotified) {
       this.readyNotified = true;
-      this.chartReady.emit(chart);
+      try {
+        this.chartReady.emit(chart);
+      } catch (error) {
+        if (!this.destroyed) this.chartError.emit(error);
+      }
     }
   }
 

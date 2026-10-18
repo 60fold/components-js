@@ -169,7 +169,9 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
       if (!this.destroyed) this.chartError.emit(error);
     });
     this.syncStatsCallback();
-    chart.setSeriesVisibilityCallback((event) => this.seriesVisibilityChange.emit(event));
+    chart.setSeriesVisibilityCallback((event) => {
+      if (!this.destroyed) this.seriesVisibilityChange.emit(event);
+    });
     void chart
       .initialize()
       .then(() => {
@@ -189,13 +191,20 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
   private syncStatsCallback(): void {
     const chart = this.chart;
     if (!chart || this.destroyed) return;
-    const enabled = this.stats.observed;
+    const enabled = !this.stats.closed && !this.stats.isStopped && this.stats.observed;
     if (enabled === this.statsEnabled && this.statsIntervalMs === this.statsInterval) return;
     this.statsEnabled = enabled;
     this.statsInterval = this.statsIntervalMs;
-    chart.setStatsCallback(enabled ? (value) => this.stats.emit(value) : null, {
-      intervalMs: this.statsIntervalMs,
-    });
+    chart.setStatsCallback(
+      enabled
+        ? (value) => {
+            if (!this.destroyed) this.stats.emit(value);
+          }
+        : null,
+      {
+        intervalMs: this.statsIntervalMs,
+      },
+    );
   }
 
   /** Installs every reactive input in a single engine update. Each dataset
@@ -225,7 +234,11 @@ export class SixtyfoldLineChartComponent implements AfterViewInit, OnChanges, On
     }
     if (!this.destroyed && !this.rendererFailed && this.chart === chart && !this.readyNotified) {
       this.readyNotified = true;
-      this.chartReady.emit(chart);
+      try {
+        this.chartReady.emit(chart);
+      } catch (error) {
+        if (!this.destroyed) this.chartError.emit(error);
+      }
     }
   }
 

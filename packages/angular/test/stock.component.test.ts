@@ -291,4 +291,49 @@ describe("SixtyfoldStockChartComponent", () => {
 
     expect(chart.destroyed).toBe(true);
   });
+
+  it("forwards a throwing chartReady emission to chartError on both initial and recovered readiness", async () => {
+    component = createComponent();
+    const readyError = new Error("chartReady emission failed");
+    const onReady = vi.spyOn(component.chartReady, "emit").mockImplementation(() => {
+      throw readyError;
+    });
+    const onError = vi.fn();
+    component.chartError.subscribe(onError);
+    const data = ohlcv();
+    component.data = data;
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeStockChart);
+    const propError = new Error("invalid initial data");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw propError;
+    });
+
+    chart.becomeReady();
+    await settle();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(propError);
+    expect(onReady).not.toHaveBeenCalled();
+
+    component.data = { ...data };
+    expect(() => component!.ngOnChanges({})).not.toThrow();
+
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenLastCalledWith(readyError);
+  });
+
+  it("ignores late stats callbacks after ngOnDestroy", () => {
+    component = createComponent();
+    const statsEvents: unknown[] = [];
+    component.stats.subscribe((value) => statsEvents.push(value));
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeStockChart);
+    const statsCallback = chart.statsCallback;
+
+    component.ngOnDestroy();
+    component = null;
+    statsCallback?.({ fps: 60 });
+
+    expect(statsEvents).toEqual([]);
+  });
 });

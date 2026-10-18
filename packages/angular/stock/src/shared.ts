@@ -17,6 +17,22 @@ export function createStatsEmitter<T>(onObservedChange: () => void): EventEmitte
     onObservedChange();
     return subscription;
   };
+  const complete = emitter.complete.bind(emitter);
+  emitter.complete = () => {
+    try {
+      complete();
+    } finally {
+      onObservedChange();
+    }
+  };
+  const error = emitter.error.bind(emitter);
+  emitter.error = (err: unknown) => {
+    try {
+      error(err);
+    } finally {
+      onObservedChange();
+    }
+  };
   const unsubscribe = emitter.unsubscribe.bind(emitter);
   emitter.unsubscribe = () => {
     // Closing the Subject itself does not run its subscribers' finalizers.

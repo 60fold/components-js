@@ -406,4 +406,54 @@ describe("SixtyfoldLineChartComponent", () => {
     expect(chart.destroyed).toBe(true);
     expect(errors).toEqual([]);
   });
+
+  it("forwards a throwing chartReady emission to chartError on both initial and recovered readiness", async () => {
+    component = createComponent();
+    const readyError = new Error("chartReady emission failed");
+    const onReady = vi.spyOn(component.chartReady, "emit").mockImplementation(() => {
+      throw readyError;
+    });
+    const onError = vi.fn();
+    component.chartError.subscribe(onError);
+    const data = { x: new Float64Array([0, 1]), y: new Float64Array([2, 3]), length: 2 };
+    component.data = data;
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeLineChart);
+    const propError = new Error("invalid initial data");
+    vi.spyOn(chart, "setData").mockImplementationOnce(() => {
+      throw propError;
+    });
+
+    chart.becomeReady();
+    await settle();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(propError);
+    expect(onReady).not.toHaveBeenCalled();
+
+    component.data = { ...data };
+    expect(() => component!.ngOnChanges({})).not.toThrow();
+
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(chart);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenLastCalledWith(readyError);
+  });
+
+  it("ignores late seriesVisibilityChange and stats callbacks after ngOnDestroy", () => {
+    component = createComponent();
+    const visibilityEvents: unknown[] = [];
+    const statsEvents: unknown[] = [];
+    component.seriesVisibilityChange.subscribe((event) => visibilityEvents.push(event));
+    component.stats.subscribe((value) => statsEvents.push(value));
+    component.ngAfterViewInit();
+    const chart = lastChart(FakeLineChart);
+    const visibilityCallback = chart.seriesVisibilityCallback;
+    const statsCallback = chart.statsCallback;
+
+    component.ngOnDestroy();
+    component = null;
+    visibilityCallback?.({ seriesIndex: 0, visible: false });
+    statsCallback?.({ fps: 60 });
+
+    expect(visibilityEvents).toEqual([]);
+    expect(statsEvents).toEqual([]);
+  });
 });
