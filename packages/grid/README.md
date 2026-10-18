@@ -33,6 +33,8 @@ worker-side content validation rejects the dataset. Structural admission errors
 such as conflicting ownership are rejected before detachment; use copy
 ownership when any failed installation must leave the caller's buffers intact.
 Shared buffers must remain immutable until rejection, replacement, or disposal.
+UTF-8 cell values, category labels, and string row IDs preserve leading U+FEFF
+characters as data, so strings that differ by that prefix remain distinct.
 
 ## Runtime preview
 
@@ -110,6 +112,12 @@ semantic-DOM frame is acknowledged and the runtime publishes the candidate.
 `setData`, `setView`, `focusCell`, and `scrollToCell` are therefore asynchronous
 publication barriers. `getDiagnostics()` reports whether the canonical runtime
 is worker-owned or using the main-thread fallback.
+
+Publication callbacks observe the committed revisions and view state. An
+accepted edit completes once before selection/view callbacks run; a host that
+destroys the Grid from one of those callbacks does not turn that published edit
+into a failed operation. Destruction also settles an outstanding view request,
+including when called from its initial `building` notification.
 
 Exact summaries are opt-in and currently support number and dictionary-category
 columns:

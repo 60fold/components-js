@@ -280,6 +280,55 @@ describe("line renderer viewport synchronization", () => {
     expectOnlyViewportSync(messages, 10, 50);
   });
 
+  it.each(["static", "streaming"])(
+    "discards old viewport animations and requests when installing %s data",
+    (replacement) => {
+      const { engine, messages } = createHarness(true, 1);
+      setData(engine);
+      engine.handleMessage("setViewportRangeAnimated", {
+        xMin: 20,
+        xMax: 60,
+        viewportRequestId: 41,
+      });
+      const state = getLineEngineState(engine);
+      expect(state.viewportAnimation.active).toBe(true);
+
+      const timestamps = new Float64Array([10_000, 10_050, 10_100]);
+      const values = new Float64Array([1_000, 1_010, 1_020]);
+      messages.length = 0;
+      if (replacement === "static") {
+        engine.handleMessage("setData", { x: timestamps, series: [values] });
+      } else {
+        engine.handleMessage("initRingBuffer", { maxPoints: 10, seriesCount: 1 });
+        expect(state.viewportAnimation.active).toBe(false);
+        engine.handleMessage("addDataPoints", {
+          timestamps,
+          valuesBySeries: [values],
+        });
+      }
+
+      expect(state.viewportAnimation.active).toBe(false);
+      expect(state.viewport).toMatchObject({ xMin: 10_000, xMax: 10_100 });
+      expect(state.dataBounds).toMatchObject({ xMin: 10_000, xMax: 10_100 });
+      state.viewportAnimation.startTime = performance.now() - state.viewportAnimation.duration - 1;
+      engine.handleMessage("setSelection", { start: 10_020, end: 10_060 });
+      expect(state.viewport).toMatchObject({ xMin: 10_000, xMax: 10_100 });
+
+      // Completing a new, uncorrelated animation must not acknowledge the old dataset's request.
+      engine.handleMessage("setViewportRangeAnimated", { xMin: 10_020, xMax: 10_060 });
+      state.viewportAnimation.startTime = performance.now() - state.viewportAnimation.duration - 1;
+      engine.handleMessage("setSelection", { start: 10_020, end: 10_060 });
+      expect(state.viewport).toMatchObject({ xMin: 10_020, xMax: 10_060 });
+      expect(messages.filter((message) => message.type === "viewportSync")).not.toHaveLength(0);
+      expect(messages.filter((message) => message.type === "viewportSync")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ viewport: { xMin: 10_020, xMax: 10_060 } }),
+        ]),
+      );
+      for (const message of messages) expect(message).not.toHaveProperty("viewportRequestId");
+    },
+  );
+
   it("closes an owned background bitmap when the renderer stops", () => {
     const { engine } = createHarness(false);
     const image = { close: vi.fn() } as unknown as ImageBitmap;

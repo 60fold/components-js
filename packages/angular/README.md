@@ -36,8 +36,9 @@ Renderer stats are collected only while something subscribes to the `stats`
 output. Leaving `viewportAnimated` unset inherits the chart's own `animated`
 option; setting it overrides that per update.
 
-`chartError` reports construction errors, renderer startup/runtime failures,
-and overlay resolution or renderer-delivery failures. Renderer and overlay
+`chartError` reports construction and reactive prop-installation errors,
+renderer startup/runtime failures, and overlay resolution or renderer-delivery
+failures. Renderer and overlay
 failures can be narrowed with `ChartRendererError` and `ChartOverlayError` from
 the installed chart engine.
 

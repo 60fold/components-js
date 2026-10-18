@@ -34,12 +34,15 @@ once.
 
 Renderer stats are collected only while a `stats` listener can receive them.
 A sole `@stats.once` listener stops collection after its first event; ordinary
-listeners keep collection enabled. Leaving
+listeners keep collection enabled. Adding or removing listeners in a reactive
+array also updates collection; a consumed `.once` listener remains consumed for
+the component lifetime. Leaving
 `viewportAnimated` unset inherits the chart's own `animated` option; setting it
 overrides that per update.
 
-The `error` event reports construction errors, renderer startup/runtime
-failures, and overlay resolution or renderer-delivery failures. Renderer and
+The `error` event reports construction and reactive prop-installation errors,
+renderer startup/runtime failures, and overlay resolution or renderer-delivery
+failures. Renderer and
 overlay failures can be narrowed with `ChartRendererError` and
 `ChartOverlayError` from the installed chart engine.
 

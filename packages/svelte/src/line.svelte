@@ -24,8 +24,17 @@
   /** Leave undefined to inherit the chart's configured `animated` default. */
   export let viewportAnimated: boolean | undefined = undefined;
   export let statsIntervalMs: number | undefined = undefined;
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   export let onReady: ((chart: LineChart) => void) | undefined = undefined;
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   export let onError: ((error: unknown) => void) | undefined = undefined;
   export let onStats: ((stats: LineChartStats) => void) | undefined = undefined;
   export let onSeriesVisibilityChange: ((event: SeriesVisibilityChangeEvent) => void) | undefined =

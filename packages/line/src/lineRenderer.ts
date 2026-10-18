@@ -268,6 +268,9 @@ export function createLineChartEngine(
   /** Recursive deep merge for plain objects. Arrays replace wholesale. */
   function rendererDeepMerge(target: Record<string, any>, source: Record<string, any>): void {
     for (const key of Object.keys(source)) {
+      // Never follow prototype links or evaluate values for these keys, even
+      // when a patch came from JSON or contains an accessor property.
+      if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
       const val = source[key];
       if (val === undefined) continue;
       if (Array.isArray(val)) {
@@ -1936,6 +1939,9 @@ export function createLineChartEngine(
     prepareRetainedPlotFrame(preservePreviousFrame);
     assignDataVersion(nextDataVersion);
     cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     ringBufferMode = false;
     streamingBoundsIndex = null;
     writeIndex = 0;
@@ -2050,6 +2056,9 @@ export function createLineChartEngine(
     stopped = false;
     // Cancel work for the previous dataset before replacing its storage.
     cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     retainedPlotFrame = null;
     assignDataVersion(nextDataVersion);
     ringBufferMode = true;

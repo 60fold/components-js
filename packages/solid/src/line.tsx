@@ -17,8 +17,17 @@ export interface SixtyfoldLineChartProps {
   appearance?: DeepPartial<LineAppearanceOptions>;
   viewport?: Partial<Viewport>;
   viewportAnimated?: boolean;
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   onReady?: (chart: LineChart) => void;
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   onError?: (error: unknown) => void;
   onStats?: (stats: LineChartStats) => void;
   statsIntervalMs?: number;

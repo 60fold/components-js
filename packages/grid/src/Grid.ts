@@ -816,7 +816,6 @@ export class Grid {
       rowCount: this.viewState.rowCount,
       progress: { phase: "filter", completed: 0, total: dataset.rowCount },
     };
-    this.notifyHost(() => this.options.onViewChange?.(this.viewState));
     const result = new Promise<GridViewApplyResult>((resolve, reject) => {
       this.pendingView = {
         requestId,
@@ -829,6 +828,10 @@ export class Grid {
         buildDurationMs: null,
       };
     });
+    // The host may synchronously destroy the Grid from its building callback.
+    // Register the operation first so teardown can settle the returned promise.
+    this.notifyHost(() => this.options.onViewChange?.(this.viewState));
+    if (this.destroyed || this.pendingView?.requestId !== requestId) return result;
     try {
       runtime.postMessage({
         type: "setView",
@@ -2575,6 +2578,12 @@ export class Grid {
     );
 
     let callbackSource: ViewportSource = surface.runtime.source;
+    let selectionChangeSource: "data" | "view" | null = null;
+    let notifyViewChange = false;
+    let publishedEdit: {
+      operation: OutstandingGridEdit;
+      editor: ActiveGridEditor | null;
+    } | null = null;
     if (message.publicationKind === "data") {
       const pending = this.pendingInstall;
       if (
@@ -2634,12 +2643,8 @@ export class Grid {
       this.root.dataset.gridEditState = "idle";
       this.pendingInstall = null;
       pending.resolve(message.descriptor.installResult);
-      if (hadSelection) {
-        this.notifyHost(() =>
-          this.options.onSelectionChange?.({ selection: null, source: "data" }),
-        );
-      }
-      this.notifyHost(() => this.options.onViewChange?.(this.viewState));
+      if (hadSelection) selectionChangeSource = "data";
+      notifyViewChange = true;
       callbackSource = "data";
     } else if (message.publicationKind === "view") {
       const pending = this.pendingView;
@@ -2686,12 +2691,8 @@ export class Grid {
       this.updateSurfaceTransform();
       this.pendingView = null;
       pending.resolve({ status: "applied", state: this.viewState });
-      if (hadSelection) {
-        this.notifyHost(() =>
-          this.options.onSelectionChange?.({ selection: null, source: "view" }),
-        );
-      }
-      this.notifyHost(() => this.options.onViewChange?.(this.viewState));
+      if (hadSelection) selectionChangeSource = "view";
+      notifyViewChange = true;
       callbackSource = "view";
     } else if (message.publicationKind === "edit") {
       const candidate = this.pendingEditCandidate;
@@ -2746,17 +2747,9 @@ export class Grid {
       );
       this.scrollport.scrollLeft = surface.viewport.scrollLeft;
       this.updateSurfaceTransform();
-      if (hadSelection) {
-        this.notifyHost(() =>
-          this.options.onSelectionChange?.({ selection: null, source: "view" }),
-        );
-      }
-      if (candidate.viewChanged) {
-        this.notifyHost(() => this.options.onViewChange?.(this.viewState));
-      }
-      this.completeEdit(operation, "accepted", { publishedDataRevision: this.dataRevision });
-      if (editor) this.finishEditorExit(editor, true);
-      else this.closeEditor(false);
+      if (hadSelection) selectionChangeSource = "view";
+      notifyViewChange = candidate.viewChanged;
+      publishedEdit = { operation, editor };
       this.root.dataset.gridEditState = "idle";
       callbackSource = candidate.viewChanged ? "view" : "data";
     }
@@ -2769,10 +2762,33 @@ export class Grid {
     this.paintError = null;
     this.supersedeStaleSummaryQueries();
 
+    // The canonical runtime has acknowledged this complete publication. Settle
+    // its edit before calling any host code, which may synchronously destroy
+    // the Grid and otherwise misclassify an already-published edit as failed.
+    if (publishedEdit) {
+      this.completeEdit(publishedEdit.operation, "accepted", {
+        publishedDataRevision: this.dataRevision,
+      });
+      if (this.destroyed) return;
+      if (publishedEdit.editor) this.finishEditorExit(publishedEdit.editor, true);
+      else this.closeEditor(false);
+      if (this.destroyed) return;
+    }
+    if (selectionChangeSource) {
+      const source = selectionChangeSource;
+      this.notifyHost(() => this.options.onSelectionChange?.({ selection: null, source }));
+      if (this.destroyed) return;
+    }
+    if (notifyViewChange) {
+      this.notifyHost(() => this.options.onViewChange?.(this.viewState));
+      if (this.destroyed) return;
+    }
     this.notifyHost(() =>
       this.options.onViewportChange?.({ viewport: surface.viewport, source: callbackSource }),
     );
+    if (this.destroyed) return;
     this.emitDiagnostics();
+    if (this.destroyed) return;
     if (surface.telemetry) {
       const publicationCompleteAtMs = performance.now();
       const latestIntentAtPublication = this.latestSurfaceIntent;

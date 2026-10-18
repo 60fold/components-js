@@ -164,6 +164,7 @@ pnpm run check:package-release
 clean browser, framework-type, worker, tree-shaking, and server-runtime SSR
 consumers. Real Canvas2D PNG output is also verified in pinned Node.js, Bun, and
 Deno CI environments.
+
 `check:examples` builds and opens the React, Vue, Angular, Svelte, and SolidJS
 examples in Chromium and requires both chart workers to become ready without
 console errors or external network requests. See [`examples/`](./examples/).

@@ -47,7 +47,9 @@ export const SixtyfoldLineChart = defineComponent({
     onStatsOnce: [Function, Array] as PropType<StatsListener<LineChartStats>>,
   },
   emits: {
+    /** Fires once after initialization and the first successful prop batch; does not wait for paint. */
     ready: (_chart: LineChart) => true,
+    /** Reports construction, reactive prop-installation, renderer, and overlay failures. */
     error: (_error: unknown) => true,
     seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true,
   },
@@ -177,7 +179,12 @@ export const SixtyfoldLineChart = defineComponent({
       () => applyReactiveProps(),
     );
     watch(
-      () => [props.onStats, props.onStatsOnce, props.statsIntervalMs] as const,
+      () =>
+        [
+          hasStatsListener(props.onStats),
+          hasStatsListener(props.onStatsOnce),
+          props.statsIntervalMs,
+        ] as const,
       () => syncStatsCallback(),
     );
 

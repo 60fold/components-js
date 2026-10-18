@@ -1509,6 +1509,128 @@ describe("Grid canonical runtime facade", () => {
     grid.destroy();
   });
 
+  it("settles a view destroyed synchronously from its building callback", async () => {
+    const grid = new Grid(host(), {
+      renderMode: "main",
+      onViewChange: (state) => {
+        if (state.status === "building") grid.destroy();
+      },
+    });
+    await grid.setData(fixture());
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("The view did not settle.")), 100);
+    });
+    try {
+      await expect(
+        Promise.race([
+          grid.setView({ sort: [{ columnId: "value", direction: "ascending" }] }),
+          timeout,
+        ]),
+      ).resolves.toMatchObject({ status: "superseded" });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      grid.destroy();
+    }
+  });
+
+  it.each(["data", "view"] as const)(
+    "stops %s publication notifications when its ready callback destroys the Grid",
+    async (publication) => {
+      let armed = false;
+      let destroyed = false;
+      const laterNotifications = vi.fn();
+      const grid = new Grid(host(), {
+        renderMode: "main",
+        onViewChange: (state) => {
+          if (armed && state.status === "ready") {
+            grid.destroy();
+            destroyed = true;
+          }
+        },
+        onViewportChange: () => {
+          if (destroyed) laterNotifications();
+        },
+        onDiagnosticsChange: () => {
+          if (destroyed) laterNotifications();
+        },
+      });
+      await grid.setData(fixture());
+      armed = true;
+
+      if (publication === "data") await grid.setData(fixture([5, 6]));
+      else {
+        await expect(
+          grid.setView({ sort: [{ columnId: "value", direction: "ascending" }] }),
+        ).resolves.toMatchObject({ status: "applied" });
+      }
+
+      expect(destroyed).toBe(true);
+      expect(laterNotifications).not.toHaveBeenCalled();
+      grid.destroy();
+    },
+  );
+
+  it.each(["selection", "view", "edit", "viewport", "diagnostics"] as const)(
+    "completes a published edit once when its %s callback destroys the Grid",
+    async (callback) => {
+      const completed = vi.fn();
+      const reconcile = vi.fn();
+      const gridHost = host();
+      let armed = false;
+      let destroyed = false;
+      const destroyFrom = (source: typeof callback): void => {
+        if (!armed || destroyed || source !== callback) return;
+        destroyed = true;
+        grid.destroy();
+      };
+      const grid = new Grid(gridHost, {
+        renderMode: "main",
+        summary: { columns: ["value"] },
+        onSelectionChange: ({ selection }) => {
+          if (selection === null) destroyFrom("selection");
+        },
+        onViewChange: (state) => {
+          if (state.status === "ready") destroyFrom("view");
+        },
+        onViewportChange: () => destroyFrom("viewport"),
+        onDiagnosticsChange: () => {
+          if (completed.mock.calls.length > 0) destroyFrom("diagnostics");
+        },
+        editing: {
+          mode: "controlled",
+          onEditRequest: async (request) => {
+            const lease = await request.beginAuthoritativeCommit();
+            return lease.granted
+              ? { outcome: "accepted", leaseId: lease.leaseId }
+              : { outcome: "rejected", code: lease.reason, message: lease.reason };
+          },
+          onReconcileRequired: reconcile,
+          onEditComplete: (completion) => {
+            completed(completion);
+            destroyFrom("edit");
+          },
+        },
+      });
+      await grid.setData(fixture([3, 1, 2], true));
+      await grid.setView({ sort: [{ columnId: "value", direction: "ascending" }] });
+      await grid.focusCell({ rowId: 0, columnId: "value" });
+      const control = await openNumberEditor(gridHost);
+      armed = true;
+      control.value = "0";
+      control.dispatchEvent(new Event("input", { bubbles: true }));
+      control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      await vi.waitFor(() => expect(destroyed).toBe(true));
+      expect(completed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "accepted", publishedDataRevision: 2 }),
+      );
+      expect(reconcile).not.toHaveBeenCalled();
+      grid.destroy();
+    },
+  );
+
   it("grants a worker reservation and publishes one controlled inline edit", async () => {
     let request: EditRequest | null = null;
     const completed = vi.fn();

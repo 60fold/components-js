@@ -120,6 +120,48 @@ describe("GridDataStore", () => {
     expect(store.cellAt(1, "text")).toBe("");
   });
 
+  it.each(["sync", "async"] as const)(
+    "preserves leading U+FEFF in text, category, identifier, and row-ID values (%s validation)",
+    async (validation) => {
+      const identities = ["value", "\ufeffvalue", "\ufeff"];
+      const texts = ["\ufefftext", "\ufeff", "\ufeff\ufefftext"];
+      const data: GridData = {
+        length: 3,
+        rowIds: { kind: "string", ...utf8(identities) },
+        columns: [
+          column("text", { kind: "text", values: utf8(texts) }),
+          column("category", {
+            kind: "category",
+            codes: { view: new Uint8Array([0, 1, 2]) },
+            dictionary: utf8(identities),
+          }),
+          column("id", { kind: "id", values: { encoding: "utf8", ...utf8(identities) } }),
+        ],
+      };
+      const store = new GridDataStore();
+      if (validation === "async") {
+        const preflight = await preflightGridDataAsync(data, { yieldIntervalMs: 0 });
+        store.installWorkerIngress(data, preflight);
+      } else {
+        store.install(data);
+      }
+
+      for (let row = 0; row < identities.length; row++) {
+        expect(store.rowIdAt(row)).toBe(identities[row]);
+        expect(store.rowIndexOf(identities[row]!)).toBe(row);
+        expect(store.cellAt(row, "text")).toBe(texts[row]);
+        expect(store.cellAt(row, "category")).toBe(identities[row]);
+        expect(store.cellAt(row, "id")).toBe(identities[row]);
+      }
+      const category = store.typedColumnAt("category");
+      if (category?.kind !== "category") throw new Error("Expected category access.");
+      expect(category.dictionary).toEqual(identities);
+      expect(category.codeByValue.get("value")).toBe(0);
+      expect(category.codeByValue.get("\ufeffvalue")).toBe(1);
+      expect(category.codeByValue.get("\ufeff")).toBe(2);
+    },
+  );
+
   it("exposes zero-decoding typed columns while unsupported kinds fall back", () => {
     const store = new GridDataStore();
     store.install(fullFixture());

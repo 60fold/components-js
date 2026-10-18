@@ -29,8 +29,9 @@ const aggregateGzipBudgets = Object.freeze({
   // claims. Browser runtime sizes are measured separately in a clean consumer.
   // Core ships unminified with preserveModules, so this counts JSDoc a browser
   // never downloads; the browser runtime budgets below are the wire-size gate.
-  "@sixtyfold/core": 60_000,
-  "@sixtyfold/line": 80_000,
+  // Reviewed 1.0.1 merge hardening and documentation growth retain explicit headroom.
+  "@sixtyfold/core": 62_000,
+  "@sixtyfold/line": 82_000,
   "@sixtyfold/stock": 63_000,
   "@sixtyfold/ssr": 3_000,
   // The archive contains the combined catalog plus independently consumable
@@ -44,20 +45,22 @@ const aggregateGzipBudgets = Object.freeze({
   "@sixtyfold/mcp": 24_000,
 });
 const initialWorkerBrowserRuntimeGzipBudgets = Object.freeze({
-  line: 63_000,
-  stock: 55_000,
-});
-const browserRuntimeGzipBudgets = Object.freeze({
+  // Reviewed 1.0.1 growth includes streaming validation and lifecycle fixes.
+  // Keep an explicit allowance above measured wire size, not a fixed payload claim.
   line: 65_000,
   stock: 57_000,
 });
-const initialMainThreadBrowserRuntimeGzipBudgets = Object.freeze({
-  line: 62_000,
-  stock: 54_000,
+const browserRuntimeGzipBudgets = Object.freeze({
+  line: 67_000,
+  stock: 59_000,
 });
-const mainThreadBrowserRuntimeGzipBudgets = Object.freeze({
+const initialMainThreadBrowserRuntimeGzipBudgets = Object.freeze({
   line: 64_000,
   stock: 56_000,
+});
+const mainThreadBrowserRuntimeGzipBudgets = Object.freeze({
+  line: 66_000,
+  stock: 58_000,
 });
 const prohibitedNetworkPatterns = Object.freeze([
   { pattern: /https?:\/\//u, description: "an embedded HTTP(S) destination" },

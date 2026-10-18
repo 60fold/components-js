@@ -1,4 +1,4 @@
-import { createApp, h, nextTick, shallowReactive, type App, type Component } from "vue";
+import { createApp, h, nextTick, reactive, shallowReactive, type App, type Component } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FakeLineChart,
@@ -227,6 +227,40 @@ describe.each(adapters)("$name stats listeners", (adapter) => {
     expect(second).toHaveBeenCalledTimes(1);
     expect(replacement).toHaveBeenCalledExactlyOnceWith(stats);
   });
+
+  it.each(["onStats", "onStatsOnce"])(
+    "starts collection when a listener is pushed into a reactive %s array",
+    async (listenerProp) => {
+      const listeners = reactive<((stats: unknown) => void)[]>([]);
+      const chart = mount(adapter, { [listenerProp]: listeners });
+      await settle();
+      expect(chart.statsCallback).toBeNull();
+
+      const listener = vi.fn();
+      listeners.push(listener);
+      await settle();
+      expect(chart.statsCallback).toBeTypeOf("function");
+      chart.statsCallback?.({ fps: 60 });
+      expect(listener).toHaveBeenCalledExactlyOnceWith({ fps: 60 });
+
+      if (listenerProp === "onStatsOnce") {
+        expect(chart.statsCallback).toBeNull();
+        listeners.splice(0, 1, vi.fn());
+        await settle();
+        expect(chart.statsCallback).toBeNull();
+      } else {
+        listeners.splice(0);
+        await settle();
+        expect(chart.statsCallback).toBeNull();
+        listeners.push(listener);
+        await settle();
+        expect(chart.statsCallback).toBeTypeOf("function");
+        chart.statsCallback?.({ fps: 59 });
+        expect(listener).toHaveBeenCalledTimes(2);
+      }
+      expect(adapter.chartType.instances).toEqual([chart]);
+    },
+  );
 
   it("collects for a once-only stats listener and preserves Vue's once semantics", async () => {
     const chart = mount(adapter);

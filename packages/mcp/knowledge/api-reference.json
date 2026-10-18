@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceHash": "b6a0f16ebed312a7cb46272b8bcb3560b014930b2f8b5ddd18fcfe086e53c697",
+  "sourceHash": "dbd578c7be5714a198d7afbb1b69926b7f6b97be77e739972dc08e78abd46638",
   "packages": [
     {
       "name": "@sixtyfold/angular",
@@ -102,14 +102,14 @@
                   "name": "chartError",
                   "kind": "property",
                   "optional": false,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "chartError: EventEmitter<unknown>"
                 },
                 {
                   "name": "chartReady",
                   "kind": "property",
                   "optional": false,
-                  "description": "The chart ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "chartReady: EventEmitter<LineChart>"
                 },
                 {
@@ -290,14 +290,14 @@
                   "name": "chartError",
                   "kind": "property",
                   "optional": false,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "chartError: EventEmitter<unknown>"
                 },
                 {
                   "name": "chartReady",
                   "kind": "property",
                   "optional": false,
-                  "description": "The chart ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "chartReady: EventEmitter<StockChart>"
                 },
                 {
@@ -7102,7 +7102,10 @@
                   "name": "addVectors",
                   "kind": "function",
                   "optional": false,
-                  "description": "The add vectors operation.",
+                  "description": "Appends aligned typed columns after flushing queued scalar samples. Worker mode transfers and detaches the supplied buffers. Invalid input does not flush queued samples or transfer the supplied buffers.",
+                  "throws": [
+                    "Error if the columns are malformed or any timestamp is non-finite."
+                  ],
                   "signature": "addVectors: (timestamps: Float64Array, valuesBySeries: Float64Array[]) => void"
                 },
                 {
@@ -9301,7 +9304,7 @@
                   "name": "onError",
                   "kind": "property",
                   "optional": true,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "onError: (error: unknown) => void"
                 },
                 {
@@ -9749,7 +9752,7 @@
                   "name": "onReady",
                   "kind": "property",
                   "optional": true,
-                  "description": "The on ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "onReady: (chart: LineChart) => void"
                 },
                 {
@@ -11337,7 +11340,7 @@
                   "name": "onError",
                   "kind": "property",
                   "optional": true,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "onError: (error: unknown) => void"
                 },
                 {
@@ -11785,7 +11788,7 @@
                   "name": "onReady",
                   "kind": "property",
                   "optional": true,
-                  "description": "The on ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "onReady: (chart: StockChart) => void"
                 },
                 {
@@ -12372,14 +12375,14 @@
                   "name": "onError",
                   "kind": "property",
                   "optional": true,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "onError: (error: unknown) => void"
                 },
                 {
                   "name": "onReady",
                   "kind": "property",
                   "optional": true,
-                  "description": "The on ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "onReady: (chart: LineChart) => void"
                 },
                 {
@@ -12476,14 +12479,14 @@
                   "name": "onError",
                   "kind": "property",
                   "optional": true,
-                  "description": "Reports construction, renderer, and overlay-image failures.",
+                  "description": "Reports construction, reactive prop-installation, renderer, and overlay failures. Corrected props can recover from a rejected installation; renderer failures require remounting.",
                   "signature": "onError: (error: unknown) => void"
                 },
                 {
                   "name": "onReady",
                   "kind": "property",
                   "optional": true,
-                  "description": "The on ready value.",
+                  "description": "Fires once after initialization and the first successful reactive prop batch. Rejected initial props can be corrected and retried. Does not wait for a painted frame.",
                   "signature": "onReady: (chart: StockChart) => void"
                 },
                 {
@@ -14028,7 +14031,7 @@
                   "name": "setViewport",
                   "kind": "function",
                   "optional": false,
-                  "description": "Set the viewport range programmatically. Only `xMin` and/or `xMax` need to be provided; omitted fields keep current values.",
+                  "description": "Set a timestamp range. In market time, omitted edges resolve in the renderer after earlier requests, and getViewport() follows its accepted range sync.",
                   "signature": "setViewport: (viewport: Partial<Viewport>, options?: { animated?: boolean; }) => void"
                 },
                 {
@@ -16244,7 +16247,7 @@
               "name": "default",
               "kind": "constant",
               "description": "The default value.",
-              "signature": "Line: $$__sveltets_2_IsomorphicComponent<{ /** Construction-time options. Remount the component to replace them. */ options?: LineChartOptions; /** * One-shot chart data. Assign a new object for each update. Worker mode * transfers and detaches its buffers; main-thread mode retains references. */ data?: LineData | undefined; dataUpdateOptions?: LineDataUpdateOptions | undefined; appearance?: DeepPartial<LineAppearanceOptions> | undefined; viewport?: Partial<Viewport> | undefined; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated?: boolean | undefined; statsIntervalMs?: number | undefined; onReady?: ((chart: LineChart) => void) | undefined; /** Reports construction, renderer, and overlay-image failures. */ onError?: ((error: unknown) => void) | undefined; onStats?: ((stats: LineChartStats) => void) | undefined; onSeriesVisibilityChange?: ((event: SeriesVisibilityChangeEvent) => void) | undefined; canvasClass?: string; canvasStyle?: string; ariaLabel?: string | undefined; ariaDescribedBy?: string | undefined; canvasRole?: string | undefined; canvasTabIndex?: number | undefined; /** Bindable access to the mounted imperative chart. */ chart?: LineChart | null; }, { [evt: string]: CustomEvent<any>; }, {}, {}, string>",
+              "signature": "Line: $$__sveltets_2_IsomorphicComponent<{ /** Construction-time options. Remount the component to replace them. */ options?: LineChartOptions; /** * One-shot chart data. Assign a new object for each update. Worker mode * transfers and detaches its buffers; main-thread mode retains references. */ data?: LineData | undefined; dataUpdateOptions?: LineDataUpdateOptions | undefined; appearance?: DeepPartial<LineAppearanceOptions> | undefined; viewport?: Partial<Viewport> | undefined; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated?: boolean | undefined; statsIntervalMs?: number | undefined; /** * Fires once after initialization and the first successful reactive prop * batch. Rejected initial props can be corrected and retried. Does not * wait for a painted frame. */ onReady?: ((chart: LineChart) => void) | undefined; /** * Reports construction, reactive prop-installation, renderer, and overlay * failures. Corrected props can recover from a rejected installation; * renderer failures require remounting. */ onError?: ((error: unknown) => void) | undefined; onStats?: ((stats: LineChartStats) => void) | undefined; onSeriesVisibilityChange?: ((event: SeriesVisibilityChangeEvent) => void) | undefined; canvasClass?: string; canvasStyle?: string; ariaLabel?: string | undefined; ariaDescribedBy?: string | undefined; canvasRole?: string | undefined; canvasTabIndex?: number | undefined; /** Bindable access to the mounted imperative chart. */ chart?: LineChart | null; }, { [evt: string]: CustomEvent<any>; }, {}, {}, string>",
               "members": []
             }
           ]
@@ -16256,7 +16259,7 @@
               "name": "default",
               "kind": "constant",
               "description": "The default value.",
-              "signature": "Stock: $$__sveltets_2_IsomorphicComponent<{ options?: StockChartOptions; data?: OHLCVData | undefined; appearance?: DeepPartial<StockAppearanceOptions> | undefined; viewport?: Partial<Viewport> | undefined; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated?: boolean | undefined; statsIntervalMs?: number | undefined; onReady?: ((chart: StockChart) => void) | undefined; /** Reports construction, renderer, and overlay-image failures. */ onError?: ((error: unknown) => void) | undefined; onStats?: ((stats: StockChartStats) => void) | undefined; canvasClass?: string; canvasStyle?: string; ariaLabel?: string | undefined; ariaDescribedBy?: string | undefined; canvasRole?: string | undefined; canvasTabIndex?: number | undefined; chart?: StockChart | null; }, { [evt: string]: CustomEvent<any>; }, {}, {}, string>",
+              "signature": "Stock: $$__sveltets_2_IsomorphicComponent<{ options?: StockChartOptions; data?: OHLCVData | undefined; appearance?: DeepPartial<StockAppearanceOptions> | undefined; viewport?: Partial<Viewport> | undefined; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated?: boolean | undefined; statsIntervalMs?: number | undefined; /** * Fires once after initialization and the first successful reactive prop * batch. Rejected initial props can be corrected and retried. Does not * wait for a painted frame. */ onReady?: ((chart: StockChart) => void) | undefined; /** * Reports construction, reactive prop-installation, renderer, and overlay * failures. Corrected props can recover from a rejected installation; * renderer failures require remounting. */ onError?: ((error: unknown) => void) | undefined; onStats?: ((stats: StockChartStats) => void) | undefined; canvasClass?: string; canvasStyle?: string; ariaLabel?: string | undefined; ariaDescribedBy?: string | undefined; canvasRole?: string | undefined; canvasTabIndex?: number | undefined; chart?: StockChart | null; }, { [evt: string]: CustomEvent<any>; }, {}, {}, string>",
               "members": []
             }
           ]
@@ -16409,7 +16412,7 @@
               "name": "SixtyfoldLineChart",
               "kind": "constant",
               "description": "Vue host for a Sixtyfold line chart. The component is SSR-safe and emits the underlying chart on readiness.",
-              "signature": "SixtyfoldLineChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: LineChart) => true; error: (_error: unknown) => true; seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>> & Readonly<{ onReady?: ((_chart: LineChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; onSeriesVisibilityChange?: ((_event: SeriesVisibilityChangeEvent) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
+              "signature": "SixtyfoldLineChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { /** Fires once after initialization and the first successful prop batch; does not wait for paint. */ ready: (_chart: LineChart) => true; /** Reports construction, reactive prop-installation, renderer, and overlay failures. */ error: (_error: unknown) => true; seriesVisibilityChange: (_event: SeriesVisibilityChangeEvent) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<LineChartOptions>; data: PropType<LineData>; dataUpdateOptions: PropType<LineDataUpdateOptions>; appearance: PropType<DeepPartial<LineAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<LineChartStats>>; onStatsOnce: PropType<StatsListener<LineChartStats>>; }>> & Readonly<{ onReady?: ((_chart: LineChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; onSeriesVisibilityChange?: ((_event: SeriesVisibilityChangeEvent) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
               "members": []
             }
           ]
@@ -16421,7 +16424,7 @@
               "name": "SixtyfoldStockChart",
               "kind": "constant",
               "description": "Vue host for a Sixtyfold stock chart.",
-              "signature": "SixtyfoldStockChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { ready: (_chart: StockChart) => true; error: (_error: unknown) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>> & Readonly<{ onReady?: ((_chart: StockChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
+              "signature": "SixtyfoldStockChart: import(\"vue\").DefineComponent<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>, () => import(\"vue\").VNode<import(\"vue\").RendererNode, import(\"vue\").RendererElement, { [key: string]: any; }>, {}, {}, {}, import(\"vue\").ComponentOptionsMixin, import(\"vue\").ComponentOptionsMixin, { /** Fires once after initialization and the first successful prop batch; does not wait for paint. */ ready: (_chart: StockChart) => true; /** Reports construction, reactive prop-installation, renderer, and overlay failures. */ error: (_error: unknown) => true; }, string, import(\"vue\").PublicProps, Readonly<import(\"vue\").ExtractPropTypes<{ options: PropType<StockChartOptions>; data: PropType<OHLCVData>; appearance: PropType<DeepPartial<StockAppearanceOptions>>; viewport: PropType<Partial<Viewport>>; /** Leave undefined to inherit the chart's configured `animated` default. */ viewportAnimated: { type: BooleanConstructor; default: undefined; }; statsIntervalMs: NumberConstructor; onStats: PropType<StatsListener<StockChartStats>>; onStatsOnce: PropType<StatsListener<StockChartStats>>; }>> & Readonly<{ onReady?: ((_chart: StockChart) => any) | undefined; onError?: ((_error: unknown) => any) | undefined; }>, { viewportAnimated: boolean; }, {}, {}, {}, string, import(\"vue\").ComponentProvideOptions, true, {}, any>",
               "members": []
             }
           ]

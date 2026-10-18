@@ -308,6 +308,13 @@ export class StockChart extends BaseChart<StockChartOptions> {
   private tooltipFields: string[] | null = null;
   private tooltipFieldLabels: StockTooltipFieldLabels = {};
   private activeTimeRange: TimeRange | null = "ALL";
+  private notifiedTimeRange: TimeRange | null = "ALL";
+  private timeRangeNotifications: {
+    range: TimeRange | null;
+    source: TimeRangeChangeSource;
+    force: boolean;
+    queued: boolean;
+  }[] = [];
   private onTimeRangeChange?: (range: TimeRange | null) => void;
   private onCrosshairMove?: (detail: StockCrosshairMoveDetail | null) => void;
   private onVisibleRangeChange?: (detail: StockVisibleRangeChangeDetail) => void;
@@ -608,7 +615,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
       this.timeViewport = { ...this.timeDataBounds };
     }
     this.lastResetTime = performance.now();
-    this.deferInBatch(() => this.emitTimeRangeChange("ALL", "reset", true));
+    this.emitTimeRangeChange("ALL", "reset", true, true);
   }
 
   protected onViewportManualChange(): void {
@@ -809,7 +816,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
       transferList,
     );
     if (options.initialTimeRange) {
-      this.deferInBatch(() => this.emitTimeRangeChange(options.initialTimeRange!, "api"));
+      this.emitTimeRangeChange(options.initialTimeRange, "api");
     }
   }
 
@@ -858,7 +865,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
     );
     this.lastCandleTimestamp = lastTimestamp;
     if (options.initialTimeRange) {
-      this.deferInBatch(() => this.emitTimeRangeChange(options.initialTimeRange!, "api"));
+      this.emitTimeRangeChange(options.initialTimeRange, "api");
     }
   }
 
@@ -927,44 +934,37 @@ export class StockChart extends BaseChart<StockChartOptions> {
     if (this.activeTimeRange === range) return;
 
     this.postMessageBatched({ type: "setTimeRange", range });
-    this.deferInBatch(() => this.emitTimeRangeChange(range, "api"));
+    this.emitTimeRangeChange(range, "api", false, true);
   }
 
   override getViewport(): Viewport {
     return this.timeScale === "market" ? { ...this.timeViewport } : super.getViewport();
   }
 
+  /**
+   * Set a timestamp range. In market time, omitted edges resolve in the renderer
+   * after earlier requests, and getViewport() follows its accepted range sync.
+   */
   override setViewport(viewport: Partial<Viewport>, options?: { animated?: boolean }): void {
     if (this.destroyed) return;
     if (this.timeScale !== "market") {
       super.setViewport(viewport, options);
-      this.deferInBatch(() => this.emitTimeRangeChange(null, "api"));
+      this.emitTimeRangeChange(null, "api", false, true);
       return;
     }
     this.flushViewportInputs();
-    const resolvedXMin = viewport.xMin ?? this.timeViewport.xMin;
-    const resolvedXMax = viewport.xMax ?? this.timeViewport.xMax;
-    const db = this.timeDataBounds;
-    const clampedMin = this.hasDataBounds
-      ? Math.max(db.xMin, Math.min(db.xMax, resolvedXMin))
-      : resolvedXMin;
-    const clampedMax = this.hasDataBounds
-      ? Math.max(db.xMin, Math.min(db.xMax, resolvedXMax))
-      : resolvedXMax;
-    const lo = Math.min(clampedMin, clampedMax);
-    const hi = Math.max(clampedMin, clampedMax);
-    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
-      this.timeViewport = { xMin: lo, xMax: hi };
-    }
+    // Only the renderer has the compressed-time index needed to validate the
+    // minimum span. Keep omitted edges unresolved so a rejected request cannot
+    // become the starting point of a later partial update in this batch.
     this.postMessageBatched({
       type:
         (options?.animated ?? this.animated)
           ? "setTimeViewportRangeAnimated"
           : "setTimeViewportRange",
-      xMin: lo,
-      xMax: hi,
+      xMin: viewport.xMin,
+      xMax: viewport.xMax,
     });
-    this.deferInBatch(() => this.emitTimeRangeChange(null, "api"));
+    this.emitTimeRangeChange(null, "api", false, true);
   }
 
   override reset(options?: { animated?: boolean }): void {
@@ -975,18 +975,56 @@ export class StockChart extends BaseChart<StockChartOptions> {
     range: TimeRange | null,
     source: TimeRangeChangeSource,
     force = false,
+    queued = false,
   ): void {
-    const previousRange = this.activeTimeRange;
-    if (!force && previousRange === range) return;
-    this.activeTimeRange = range;
-    this.onTimeRangeChange?.(range);
-    this.canvas.dispatchEvent(
-      new CustomEvent<TimeRangeChangeDetail>(STOCK_TIME_RANGE_CHANGE_EVENT, {
-        detail: { range, previousRange, source },
-        bubbles: true,
-        composed: true,
-      }),
-    );
+    const pending = this.timeRangeNotifications;
+    const change = { range, source, force, queued };
+    // Bulk installs post immediately, ahead of controls queued by batch().
+    // Keep every queued intent, even one equal to the current preset: a later
+    // bulk install can change the preset before that control reaches the engine.
+    const index = queued ? -1 : pending.findIndex((entry) => entry.queued);
+    if (index < 0) pending.push(change);
+    else pending.splice(index, 0, change);
+    this.activeTimeRange = pending[pending.length - 1].range;
+    if (queued) this.deferInBatch(() => (change.queued = false));
+    if (pending.length === 1) this.deferInBatch(() => this.flushTimeRangeNotifications());
+  }
+
+  private flushTimeRangeNotifications(): void {
+    const pending = this.timeRangeNotifications;
+    // All controls from this batch have now posted. Reentrant bulk installs
+    // belong after these notifications; nested batches mark only their own
+    // controls until those batches flush.
+    for (const change of pending) change.queued = false;
+    let failed = false;
+    let firstFailure: unknown;
+    for (let index = 0; index < pending.length && !this.destroyed; index++) {
+      const { range, source, force } = pending[index];
+      const previousRange = this.notifiedTimeRange;
+      if (!force && previousRange === range) continue;
+      this.notifiedTimeRange = range;
+      try {
+        this.onTimeRangeChange?.(range);
+      } catch (error) {
+        if (!failed) firstFailure = error;
+        failed = true;
+      }
+      if (this.destroyed) break;
+      try {
+        this.canvas.dispatchEvent(
+          new CustomEvent<TimeRangeChangeDetail>(STOCK_TIME_RANGE_CHANGE_EVENT, {
+            detail: { range, previousRange, source },
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      } catch (error) {
+        if (!failed) firstFailure = error;
+        failed = true;
+      }
+    }
+    pending.length = 0;
+    if (failed) throw firstFailure;
   }
 
   private getTooltipFieldLabel(field: StockTooltipField): string {
@@ -1050,6 +1088,7 @@ export class StockChart extends BaseChart<StockChartOptions> {
 
   destroy(): void {
     this.discardPendingCandles();
+    this.timeRangeNotifications = [];
     super.destroy();
     this.onStatsUpdate = null;
     this.onTimeRangeChange = undefined;

@@ -43,7 +43,9 @@ export const SixtyfoldStockChart = defineComponent({
     onStatsOnce: [Function, Array] as PropType<StatsListener<StockChartStats>>,
   },
   emits: {
+    /** Fires once after initialization and the first successful prop batch; does not wait for paint. */
     ready: (_chart: StockChart) => true,
+    /** Reports construction, reactive prop-installation, renderer, and overlay failures. */
     error: (_error: unknown) => true,
   },
   setup(props, { attrs, emit, expose }) {
@@ -161,7 +163,12 @@ export const SixtyfoldStockChart = defineComponent({
       () => applyReactiveProps(),
     );
     watch(
-      () => [props.onStats, props.onStatsOnce, props.statsIntervalMs] as const,
+      () =>
+        [
+          hasStatsListener(props.onStats),
+          hasStatsListener(props.onStatsOnce),
+          props.statsIntervalMs,
+        ] as const,
       () => syncStatsCallback(),
     );
 

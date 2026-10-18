@@ -719,6 +719,9 @@ export function createStockChartEngine(
     }));
     stopped = false;
     cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     ringBufferMode = false;
     writeIndex = 0;
     bufferFull = false;
@@ -779,6 +782,9 @@ export function createStockChartEngine(
   function initRingBuffer(maxCandles: number) {
     stopped = false;
     cancelLODWork();
+    state.viewportAnimation.active = false;
+    state.yAnimation.active = false;
+    pendingViewportRequestId = undefined;
     deferInitialRenderUntilLODReady = false;
     ringBufferMode = true;
     ringBufferMaxCandles = maxCandles;
@@ -2390,17 +2396,41 @@ export function createStockChartEngine(
     }
   }
 
-  function setTimeViewportRange(xMin: number, xMax: number, animated: boolean): void {
+  function setTimeViewportRange(
+    xMin: number | undefined,
+    xMax: number | undefined,
+    animated: boolean,
+  ): void {
     if (timeScale !== "market") return;
-    const internalMin = timestampToMarketX(xMin);
-    const internalMax = timestampToMarketX(xMax);
+    if (
+      (xMin !== undefined && !Number.isFinite(xMin)) ||
+      (xMax !== undefined && !Number.isFinite(xMax))
+    ) {
+      emitViewportSync();
+      return;
+    }
+    // Resolve partial requests against the latest accepted target. The host
+    // cannot validate a timestamp span against the compressed-time minimum.
+    const current = state.viewportAnimation.active
+      ? state.viewportAnimation.toViewport
+      : state.viewport;
+    const requestedMin = xMin === undefined ? current.xMin : timestampToMarketX(xMin);
+    const requestedMax = xMax === undefined ? current.xMax : timestampToMarketX(xMax);
+    const internalMin = Math.min(requestedMin, requestedMax);
+    const internalMax = Math.max(requestedMin, requestedMax);
+    if (!Number.isFinite(internalMin) || !Number.isFinite(internalMax)) {
+      emitViewportSync();
+      return;
+    }
     if (animated) {
       setViewportRangeAnimated(state, internalMin, internalMax, minRange, performance.now());
     } else {
-      const previousAnimated = state.animated;
-      state.animated = false;
-      setViewportRangeAnimated(state, internalMin, internalMax, minRange, performance.now());
-      state.animated = previousAnimated;
+      handleBaseMessage(
+        state,
+        "setViewportRange",
+        { xMin: internalMin, xMax: internalMax },
+        minRange,
+      );
     }
     emitViewportSync();
   }

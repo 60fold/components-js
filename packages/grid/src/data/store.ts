@@ -184,7 +184,8 @@ interface GridDataPreflightRecord {
 }
 
 const OWNERSHIP_VALUES = new Set<BufferOwnership>(["copy", "transfer", "shared"]);
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+// Every slice is one cell value, so a leading U+FEFF is data, not a file BOM.
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const ASYNC_VALIDATION_CHECKPOINT_VALUES = 16_384;
 const DEFAULT_VALIDATION_YIELD_INTERVAL_MS = 8;
 const preflightRecords = new WeakMap<GridDataPreflight, GridDataPreflightRecord>();

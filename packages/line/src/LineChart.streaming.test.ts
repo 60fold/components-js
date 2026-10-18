@@ -348,6 +348,39 @@ describe("LineChart streaming initialization validation", () => {
     },
   );
 
+  it.each([NaN, Infinity, -Infinity])(
+    "rejects non-finite bulk timestamp %s without flushing samples or transferring columns",
+    (invalidTimestamp) => {
+      const { chart, postMessage, frames, flushFrame } = createChart();
+      chart.addVector(1, [10, 100]);
+      const timestamps = new Float64Array([2, invalidTimestamp, 4]);
+      const values = [new Float64Array([20, 30, 40]), new Float64Array([200, 300, 400])];
+
+      expect(() => chart.addVectors(timestamps, values)).toThrow(
+        new RangeError("Line streaming timestamp must be a finite number"),
+      );
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(frames.size).toBe(1);
+      expect(timestamps.byteLength).toBe(24);
+      expect(values.map((column) => column.byteLength)).toEqual([24, 24]);
+
+      timestamps[1] = 3;
+      chart.addVectors(timestamps, values);
+      expect(postMessage.mock.calls.map(([message]) => Array.from(message.timestamps))).toEqual([
+        [1],
+        [2, 3, 4],
+      ]);
+      expect(postMessage.mock.calls[0][0].valuesBySeries).toEqual([
+        new Float64Array([10]),
+        new Float64Array([100]),
+      ]);
+      expect(postMessage.mock.calls[1][0].timestamps).toBe(timestamps);
+      expect(postMessage.mock.calls[1][0].valuesBySeries).toBe(values);
+      flushFrame();
+      expect(postMessage).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("validates array/typed-array contracts in addVector and addVectors before flushing", () => {
     const { chart, postMessage, frames, flushFrame } = createChart();
     chart.addVector(1, [10, 100]);

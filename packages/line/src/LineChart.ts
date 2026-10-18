@@ -697,6 +697,14 @@ export class LineChart extends BaseChart<LineChartOptions> {
     this.postVectors(timestamps, valuesBySeries);
   }
 
+  /**
+   * Appends aligned typed columns after flushing queued scalar samples.
+   * Worker mode transfers and detaches the supplied buffers.
+   *
+   * Invalid input does not flush queued samples or transfer the supplied buffers.
+   *
+   * @throws Error if the columns are malformed or any timestamp is non-finite.
+   */
   addVectors(timestamps: Float64Array, valuesBySeries: Float64Array[]): void {
     if (this.destroyed) return;
     if (!(timestamps instanceof Float64Array)) {
@@ -719,6 +727,11 @@ export class LineChart extends BaseChart<LineChartOptions> {
         throw new Error(
           `addVectors: timestamps contain ${timestamps.length} points, but series ${seriesIndex} contains ${values.length}`,
         );
+      }
+    }
+    for (let index = 0; index < timestamps.length; index++) {
+      if (!Number.isFinite(timestamps[index])) {
+        throw new RangeError("Line streaming timestamp must be a finite number");
       }
     }
     this.flushBatch();

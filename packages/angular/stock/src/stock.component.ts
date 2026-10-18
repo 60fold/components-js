@@ -84,8 +84,17 @@ export class SixtyfoldStockChartComponent implements AfterViewInit, OnChanges, O
    *  class, style, and bitmap-size attributes remain controlled above. */
   @Input() canvasAttributes?: CanvasAttributes;
 
+  /**
+   * Fires once after initialization and the first successful reactive prop
+   * batch. Rejected initial props can be corrected and retried. Does not
+   * wait for a painted frame.
+   */
   @Output() readonly chartReady = new EventEmitter<StockChart>();
-  /** Reports construction, renderer, and overlay-image failures. */
+  /**
+   * Reports construction, reactive prop-installation, renderer, and overlay
+   * failures. Corrected props can recover from a rejected installation;
+   * renderer failures require remounting.
+   */
   @Output() readonly chartError = new EventEmitter<unknown>();
   @Output() readonly stats = createStatsEmitter<StockChartStats>(() => this.syncStatsCallback());
 

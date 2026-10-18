@@ -694,6 +694,67 @@ describe("stock renderer viewport synchronization", () => {
     expectOnlyViewportSync(messages, 3 * HOUR, 7 * HOUR, 0, 10 * HOUR);
   });
 
+  it.each(["static", "streaming"])(
+    "discards old viewport animations and requests when installing %s data",
+    (replacement) => {
+      const { engine, messages } = createHarness(true);
+      const data = {
+        timestamp: new Float64Array([0, 5 * HOUR, 10 * HOUR]),
+        open: new Float64Array([100, 101, 102]),
+        high: new Float64Array([102, 103, 104]),
+        low: new Float64Array([99, 100, 101]),
+        close: new Float64Array([101, 102, 103]),
+        volume: new Float64Array([1_000, 2_000, 3_000]),
+      };
+      engine.handleMessage("setData", data);
+      engine.handleMessage("setViewportRangeAnimated", {
+        xMin: 2 * HOUR,
+        xMax: 6 * HOUR,
+        viewportRequestId: 73,
+      });
+      const state = getStockEngineState(engine);
+      expect(state.viewportAnimation.active).toBe(true);
+
+      const timestamp = new Float64Array([100 * HOUR, 105 * HOUR, 110 * HOUR]);
+      messages.length = 0;
+      if (replacement === "static") {
+        engine.handleMessage("setData", { ...data, timestamp });
+      } else {
+        engine.handleMessage("initRingBuffer", { maxCandles: 10 });
+        expect(state.viewportAnimation.active).toBe(false);
+        engine.handleMessage("addCandles", {
+          timestamps: timestamp,
+          opens: data.open,
+          highs: data.high,
+          lows: data.low,
+          closes: data.close,
+          volumes: data.volume,
+        });
+      }
+
+      expect(state.viewportAnimation.active).toBe(false);
+      expect(state.viewport).toMatchObject({ xMin: 100 * HOUR, xMax: 110 * HOUR });
+      expect(state.dataBounds).toMatchObject({ xMin: 100 * HOUR, xMax: 110 * HOUR });
+      state.viewportAnimation.startTime = performance.now() - state.viewportAnimation.duration - 1;
+      engine.handleMessage("setSelection", { start: 102 * HOUR, end: 106 * HOUR });
+      expect(state.viewport).toMatchObject({ xMin: 100 * HOUR, xMax: 110 * HOUR });
+
+      engine.handleMessage("setViewportRangeAnimated", {
+        xMin: 102 * HOUR,
+        xMax: 106 * HOUR,
+      });
+      state.viewportAnimation.startTime = performance.now() - state.viewportAnimation.duration - 1;
+      engine.handleMessage("setSelection", { start: 102 * HOUR, end: 106 * HOUR });
+      expect(state.viewport).toMatchObject({ xMin: 102 * HOUR, xMax: 106 * HOUR });
+      expect(messages.filter((message) => message.type === "viewportSync")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ viewport: { xMin: 102 * HOUR, xMax: 106 * HOUR } }),
+        ]),
+      );
+      for (const message of messages) expect(message).not.toHaveProperty("viewportRequestId");
+    },
+  );
+
   it("closes an owned background bitmap when the renderer stops", () => {
     const { engine } = createHarness();
     const image = { close: vi.fn() } as unknown as ImageBitmap;
