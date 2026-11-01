@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/line",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "High-performance Canvas2D line and multi-series charts for very large datasets.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Different Planet - Unipessoal Lda.",

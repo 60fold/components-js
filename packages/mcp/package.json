@@ -1,6 +1,6 @@
 {
   "name": "@sixtyfold/mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local Model Context Protocol server for version-aware Sixtyfold component guidance.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Different Planet - Unipessoal Lda.",
