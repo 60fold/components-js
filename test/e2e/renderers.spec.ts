@@ -129,79 +129,81 @@ for (const chartType of ["Line", "Stock"] as const) {
       workerClosed = true;
     });
 
-    try {
-      // Observe commands after the renderer's existing synchronous handler.
-      // Rendering, worker messages and browser visibility APIs stay unchanged.
-      await worker.evaluate(() => {
-        globalThis.__rendererResumeMessages = { invalidations: 0, resizeWidth: null };
-        self.addEventListener("message", (event: MessageEvent) => {
-          const messages = globalThis.__rendererResumeMessages!;
-          if (event.data.type === "invalidateCache") messages.invalidations++;
-          if (event.data.type === "resize") messages.resizeWidth = event.data.width;
-        });
+    // Observe commands after the renderer's existing synchronous handler.
+    // Rendering, worker messages and browser visibility APIs stay unchanged.
+    await worker.evaluate(() => {
+      globalThis.__rendererResumeMessages = { invalidations: 0, resizeWidth: null };
+      self.addEventListener("message", (event: MessageEvent) => {
+        const messages = globalThis.__rendererResumeMessages!;
+        if (event.data.type === "invalidateCache") messages.invalidations++;
+        if (event.data.type === "resize") messages.resizeWidth = event.data.width;
       });
+    });
+    await page.evaluate(() => {
+      globalThis.__rendererResume = { frames: 0, errors: [] };
+      const chart = globalThis.__rendererSafetyChart!;
+      chart.setRendererErrorCallback((error) => {
+        globalThis.__rendererResume!.errors.push(`${error.name}: ${error.message}`);
+      });
+      chart.setStatsCallback(() => globalThis.__rendererResume!.frames++, { intervalMs: 0 });
+      document.body.style.minHeight = "2000px";
+    });
+
+    const canvas = page.locator("#chart");
+    for (const width of [880, 960]) {
+      const framesBefore = await page.evaluate(() => globalThis.__rendererResume!.frames);
+      const invalidationsBefore = await worker.evaluate(
+        () => globalThis.__rendererResumeMessages!.invalidations,
+      );
+      expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
       await page.evaluate(() => {
-        globalThis.__rendererResume = { frames: 0, errors: [] };
-        const chart = globalThis.__rendererSafetyChart!;
-        chart.setRendererErrorCallback((error) => {
-          globalThis.__rendererResume!.errors.push(`${error.name}: ${error.message}`);
-        });
-        chart.setStatsCallback(() => globalThis.__rendererResume!.frames++, { intervalMs: 0 });
-        document.body.style.minHeight = "2000px";
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
       });
+      await expect
+        .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
+        .toBeGreaterThanOrEqual(invalidationsBefore + 2);
 
-      const canvas = page.locator("#chart");
-      for (const width of [880, 960]) {
-        const framesBefore = await page.evaluate(() => globalThis.__rendererResume!.frames);
-        const invalidationsBefore = await worker.evaluate(
-          () => globalThis.__rendererResumeMessages!.invalidations,
-        );
-        expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
-        await page.evaluate(() => {
-          window.dispatchEvent(new Event("focus"));
-          document.dispatchEvent(new Event("visibilitychange"));
-        });
-        await expect
-          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
-          .toBeGreaterThanOrEqual(invalidationsBefore + 2);
-
+      expect(
         await canvas.evaluate((element, width) => {
-          element.style.width = `${width}px`;
-        }, width);
-        await expect
-          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.resizeWidth))
-          .toBe(width);
+          element.parentElement!.style.width = `${width}px`;
+          // Flush layout so ResizeObserver can deliver before worker-only polling.
+          return element.getBoundingClientRect().width;
+        }, width),
+      ).toBe(width);
+      await expect
+        .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.resizeWidth))
+        .toBe(width);
 
-        await page.evaluate(() => window.scrollTo(0, 1500));
-        await expect(canvas).not.toBeInViewport();
-        const invalidationsBeforeReentry = await worker.evaluate(
-          () => globalThis.__rendererResumeMessages!.invalidations,
-        );
-        await canvas.scrollIntoViewIfNeeded();
-        await expect(canvas).toBeInViewport();
-        await expect
-          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
-          .toBeGreaterThan(invalidationsBeforeReentry);
-        await expect
-          .poll(() => page.evaluate(() => globalThis.__rendererResume!.frames))
-          .toBeGreaterThan(framesBefore);
+      await page.evaluate(() => window.scrollTo(0, 1500));
+      await expect(canvas).not.toBeInViewport();
+      const invalidationsBeforeReentry = await worker.evaluate(
+        () => globalThis.__rendererResumeMessages!.invalidations,
+      );
+      await canvas.scrollIntoViewIfNeeded();
+      await expect(canvas).toBeInViewport();
+      await expect
+        .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
+        .toBeGreaterThan(invalidationsBeforeReentry);
+      await expect
+        .poll(() => page.evaluate(() => globalThis.__rendererResume!.frames))
+        .toBeGreaterThan(framesBefore);
 
-        const zoomed = await zoomWithWheel(page, await currentViewport(page));
-        const panned = await panWithKeyboard(page, zoomed);
-        expect(panned.xMin).toBeGreaterThan(zoomed.xMin);
-        await expectCanvasToContainChart(page);
-        expect(await page.evaluate(() => globalThis.__rendererSafetyChart!.getRenderMode())).toBe(
-          "worker",
-        );
-        expect(page.workers()).toHaveLength(1);
-        expect(page.workers()[0]).toBe(worker);
-        expect(workerClosed).toBe(false);
-        expect(await page.evaluate(() => globalThis.__rendererResume!.errors)).toEqual([]);
-        expect(pageErrors).toEqual([]);
-      }
-    } finally {
-      await destroyChart(page);
+      const zoomed = await zoomWithWheel(page, await currentViewport(page));
+      const panned = await panWithKeyboard(page, zoomed);
+      expect(panned.xMin).toBeGreaterThan(zoomed.xMin);
+      await expectCanvasToContainChart(page);
+      expect(await page.evaluate(() => globalThis.__rendererSafetyChart!.getRenderMode())).toBe(
+        "worker",
+      );
+      expect(page.workers()).toHaveLength(1);
+      expect(page.workers()[0]).toBe(worker);
+      expect(workerClosed).toBe(false);
+      expect(await page.evaluate(() => globalThis.__rendererResume!.errors)).toEqual([]);
+      expect(pageErrors).toEqual([]);
     }
+    // On failure, the page fixture cleans up after Playwright captures evidence.
+    await destroyChart(page);
   });
 }
 
@@ -816,7 +818,10 @@ async function mountLineChart(
       canvas.setAttribute("aria-label", "Line renderer test chart");
       canvas.style.cssText = `display:block;width:${dimensions.width}px;height:${dimensions.height}px`;
       document.body.style.margin = "0";
-      document.body.append(canvas);
+      const host = document.createElement("div");
+      host.style.cssText = `width:${dimensions.width}px;height:${dimensions.height}px`;
+      document.body.append(host);
+      host.append(canvas);
 
       const chart = new LineChart(canvas, {
         renderMode: mode,
@@ -924,7 +929,10 @@ async function mountStockChart(
       canvas.setAttribute("aria-label", "Stock renderer test chart");
       canvas.style.cssText = `display:block;width:${dimensions.width}px;height:${dimensions.height}px`;
       document.body.style.margin = "0";
-      document.body.append(canvas);
+      const host = document.createElement("div");
+      host.style.cssText = `width:${dimensions.width}px;height:${dimensions.height}px`;
+      document.body.append(host);
+      host.append(canvas);
 
       const length = 4_096;
       const minute = 60_000;
@@ -1104,15 +1112,12 @@ async function destroyChart(page: Page): Promise<void> {
 }
 
 async function expectCanvasToContainChart(page: Page): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const metrics = await readCanvasMetrics(page);
-        return metrics.bucketCount > 24 && metrics.luminanceRange > 80;
-      },
-      { message: "canvas should contain rendered chart pixels" },
-    )
-    .toBe(true);
+  await expect(async () => {
+    const metrics = await readCanvasMetrics(page);
+    const message = `canvas should contain rendered chart pixels: ${JSON.stringify(metrics)}`;
+    expect(metrics.bucketCount, message).toBeGreaterThan(24);
+    expect(metrics.luminanceRange, message).toBeGreaterThan(80);
+  }).toPass({ timeout: 10_000 });
 }
 
 async function expectCanvasCornerColor(
