@@ -3914,8 +3914,8 @@ export function handleBaseMessage(
       state.rangePreviewValid = false;
       // Retain the primary context: Firefox 159 rejects repeated getContext()
       // calls on transferred canvases. Only the disposable caches need rebuilding.
-      if (state.canvas) {
-        state.ctx ??= get2dContext(state.canvas, { alpha: false });
+      // Leave primary context creation to init, even if the canvas is installed.
+      if (state.ctx) {
         state.ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
       }
       // Stop any active animations which may be in corrupted state

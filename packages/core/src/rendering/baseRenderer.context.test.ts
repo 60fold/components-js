@@ -96,8 +96,8 @@ describe("primary canvas context lifetime", () => {
     expect(getContext).toHaveBeenCalledOnce();
   });
 
-  it("acquires a missing context once, then retains it", () => {
-    const { canvas, context, getContext, setTransform } = createTransferredCanvas();
+  it("leaves context creation to initialization when only the canvas is installed", () => {
+    const { canvas, getContext, setTransform } = createTransferredCanvas();
     const state = new WorkerState();
     state.canvas = canvas;
     state.dpr = 2;
@@ -105,10 +105,9 @@ describe("primary canvas context lifetime", () => {
     handleBaseMessage(state, "invalidateCache", {}, 10);
     handleBaseMessage(state, "invalidateCache", {}, 10);
 
-    expect(state.ctx).toBe(context);
-    expect(getContext).toHaveBeenCalledExactlyOnceWith("2d", { alpha: false });
-    expect(setTransform).toHaveBeenCalledTimes(2);
-    expect(setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
+    expect(state.ctx).toBeNull();
+    expect(getContext).not.toHaveBeenCalled();
+    expect(setTransform).not.toHaveBeenCalled();
   });
 
   it("does not acquire a context before a canvas is installed", () => {
