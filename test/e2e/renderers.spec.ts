@@ -110,6 +110,101 @@ for (const renderMode of ["main", "auto", "worker"] as const) {
   });
 }
 
+for (const chartType of ["Line", "Stock"] as const) {
+  test(`${chartType} worker redraws and stays interactive after repeated resume and resize`, async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    const initial =
+      chartType === "Line"
+        ? await mountLineChart(page, "worker")
+        : await mountStockChart(page, "worker");
+    expect(initial.renderMode).toBe("worker");
+    await expectCanvasToContainChart(page);
+    expect(page.workers()).toHaveLength(1);
+    const worker = page.workers()[0];
+    let workerClosed = false;
+    worker.on("close", () => {
+      workerClosed = true;
+    });
+
+    try {
+      // Observe commands after the renderer's existing synchronous handler.
+      // Rendering, worker messages and browser visibility APIs stay unchanged.
+      await worker.evaluate(() => {
+        globalThis.__rendererResumeMessages = { invalidations: 0, resizeWidth: null };
+        self.addEventListener("message", (event: MessageEvent) => {
+          const messages = globalThis.__rendererResumeMessages!;
+          if (event.data.type === "invalidateCache") messages.invalidations++;
+          if (event.data.type === "resize") messages.resizeWidth = event.data.width;
+        });
+      });
+      await page.evaluate(() => {
+        globalThis.__rendererResume = { frames: 0, errors: [] };
+        const chart = globalThis.__rendererSafetyChart!;
+        chart.setRendererErrorCallback((error) => {
+          globalThis.__rendererResume!.errors.push(`${error.name}: ${error.message}`);
+        });
+        chart.setStatsCallback(() => globalThis.__rendererResume!.frames++, { intervalMs: 0 });
+        document.body.style.minHeight = "2000px";
+      });
+
+      const canvas = page.locator("#chart");
+      for (const width of [880, 960]) {
+        const framesBefore = await page.evaluate(() => globalThis.__rendererResume!.frames);
+        const invalidationsBefore = await worker.evaluate(
+          () => globalThis.__rendererResumeMessages!.invalidations,
+        );
+        expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
+        await page.evaluate(() => {
+          window.dispatchEvent(new Event("focus"));
+          document.dispatchEvent(new Event("visibilitychange"));
+        });
+        await expect
+          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
+          .toBeGreaterThanOrEqual(invalidationsBefore + 2);
+
+        await canvas.evaluate((element, width) => {
+          element.style.width = `${width}px`;
+        }, width);
+        await expect
+          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.resizeWidth))
+          .toBe(width);
+
+        await page.evaluate(() => window.scrollTo(0, 1500));
+        await expect(canvas).not.toBeInViewport();
+        const invalidationsBeforeReentry = await worker.evaluate(
+          () => globalThis.__rendererResumeMessages!.invalidations,
+        );
+        await canvas.scrollIntoViewIfNeeded();
+        await expect(canvas).toBeInViewport();
+        await expect
+          .poll(() => worker.evaluate(() => globalThis.__rendererResumeMessages!.invalidations))
+          .toBeGreaterThan(invalidationsBeforeReentry);
+        await expect
+          .poll(() => page.evaluate(() => globalThis.__rendererResume!.frames))
+          .toBeGreaterThan(framesBefore);
+
+        const zoomed = await zoomWithWheel(page, await currentViewport(page));
+        const panned = await panWithKeyboard(page, zoomed);
+        expect(panned.xMin).toBeGreaterThan(zoomed.xMin);
+        await expectCanvasToContainChart(page);
+        expect(await page.evaluate(() => globalThis.__rendererSafetyChart!.getRenderMode())).toBe(
+          "worker",
+        );
+        expect(page.workers()).toHaveLength(1);
+        expect(page.workers()[0]).toBe(worker);
+        expect(workerClosed).toBe(false);
+        expect(await page.evaluate(() => globalThis.__rendererResume!.errors)).toEqual([]);
+        expect(pageErrors).toEqual([]);
+      }
+    } finally {
+      await destroyChart(page);
+    }
+  });
+}
+
 test("Range handles use the Safari-compatible resize cursor", async ({ page, browserName }) => {
   await mountLineChart(page, "main");
   const canvas = page.locator("#chart");
@@ -1125,6 +1220,7 @@ function resolveExpectedRenderMode(
 declare global {
   var __rendererSafetyChart:
     | {
+        getRenderMode(): "main" | "worker";
         getViewport(): Viewport;
         setViewport(viewport: Partial<Viewport>, options?: { animated?: boolean }): void;
         updateAppearance(appearance: Record<string, unknown>): void;
@@ -1133,9 +1229,13 @@ declare global {
           callback:
             ((error: { name: string; sources: readonly string[]; cause?: Error }) => void) | null,
         ): void;
+        setRendererErrorCallback(callback: (error: Error) => void): void;
+        setStatsCallback(callback: () => void, options: { intervalMs: number }): void;
         batch(fn: () => void): void;
         destroy(): void;
       }
     | undefined;
   var __rendererSafetyBitmap: ImageBitmap | undefined;
+  var __rendererResume: { frames: number; errors: string[] } | undefined;
+  var __rendererResumeMessages: { invalidations: number; resizeWidth: number | null } | undefined;
 }
