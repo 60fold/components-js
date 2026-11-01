@@ -3912,9 +3912,10 @@ export function handleBaseMessage(
       state.rangePreviewCanvas = null;
       state.rangePreviewCtx = null;
       state.rangePreviewValid = false;
-      // Recreate main canvas context - Safari may have corrupted it
-      if (state.canvas) {
-        state.ctx = get2dContext(state.canvas, { alpha: false });
+      // Retain the primary context: Firefox 159 rejects repeated getContext()
+      // calls on transferred canvases. Only the disposable caches need rebuilding.
+      // Leave primary context creation to init, even if the canvas is installed.
+      if (state.ctx) {
         state.ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
       }
       // Stop any active animations which may be in corrupted state
