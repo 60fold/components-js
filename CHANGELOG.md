@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.2 (2026-11-01)
+
+Changes since 1.0.1. No public API changes.
+
+### Fixes
+
+- Keep Line and Stock worker charts rendering in Firefox 159 after visibility or
+  focus changes and resizing. Reuse the primary Canvas2D context during cache
+  invalidation while preserving disposable-cache rebuilding, pixel-ratio
+  transforms, and animation cleanup.
+
+### Developer tooling
+
+- Add Line and Stock worker regression coverage for repeated cache invalidation,
+  resize, visibility changes, and continued interaction.
+- Release all eleven public packages at 1.0.2 and refresh the versioned MCP API
+  catalog. Packages without the renderer fix receive version and dependency
+  alignment.
+
 ## 1.0.1 (2026-10-18)
 
 Changes since 1.0.0.

@@ -1,7 +1,7 @@
 {
   "name": "@sixtyfold/example-angular",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "scripts": {
     "build": "ng build",
     "dev": "ng serve --host 127.0.0.1"

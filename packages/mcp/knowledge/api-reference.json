@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "sourceHash": "dbd578c7be5714a198d7afbb1b69926b7f6b97be77e739972dc08e78abd46638",
+  "sourceHash": "153f46c202972bb06927505df39c9eb2b482e132c06565fee2d5d509388db5b7",
   "packages": [
     {
       "name": "@sixtyfold/angular",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Angular adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -392,7 +392,7 @@
     },
     {
       "name": "@sixtyfold/core",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Shared Canvas2D chart runtime, data types, and interaction primitives for Sixtyfold Charts.",
       "entryPoints": [
         {
@@ -6489,7 +6489,7 @@
     },
     {
       "name": "@sixtyfold/line",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "High-performance Canvas2D line and multi-series charts for very large datasets.",
       "entryPoints": [
         {
@@ -8224,7 +8224,7 @@
     },
     {
       "name": "@sixtyfold/react",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "React adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -12317,7 +12317,7 @@
     },
     {
       "name": "@sixtyfold/solid",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "SolidJS adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -12532,7 +12532,7 @@
     },
     {
       "name": "@sixtyfold/ssr",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Server-side Canvas2D rendering for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -13081,7 +13081,7 @@
     },
     {
       "name": "@sixtyfold/stock",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "High-performance Canvas2D OHLCV, candlestick, and market analytics charts.",
       "entryPoints": [
         {
@@ -16237,7 +16237,7 @@
     },
     {
       "name": "@sixtyfold/svelte",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Svelte adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
@@ -16268,7 +16268,7 @@
     },
     {
       "name": "@sixtyfold/themes",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Immutable chart appearance presets for Sixtyfold Charts.",
       "entryPoints": [
         {
@@ -16402,7 +16402,7 @@
     },
     {
       "name": "@sixtyfold/vue",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Vue adapters for Sixtyfold line and stock charts.",
       "entryPoints": [
         {
