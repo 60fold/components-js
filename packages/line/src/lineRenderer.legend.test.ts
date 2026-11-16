@@ -324,16 +324,33 @@ function createSimpleRangeData(count: number): {
 function getStrokeSegments(contexts: RecordingContext[], strokeStyle: string): PathCall[][] {
   const segments: PathCall[][] = [];
   let current: PathCall[] = [];
+  // A long line is stroked in pieces that restart on the previous piece's last
+  // vertex. Such pieces are one logical segment.
+  let stroked: PathCall[] | null = null;
 
   for (const call of contexts.flatMap((context) => context.pathCalls)) {
     if (call.strokeStyle !== strokeStyle) continue;
     if (call.op === "moveTo") {
-      if (current.length > 0) segments.push(current);
-      current = [call];
+      const previous = stroked?.at(-1);
+      if (
+        stroked &&
+        previous &&
+        current.length === 0 &&
+        previous.x === call.x &&
+        previous.y === call.y
+      ) {
+        current = stroked;
+        segments.pop();
+      } else {
+        if (current.length > 0) segments.push(current);
+        current = [call];
+      }
+      stroked = null;
     } else if (call.op === "lineTo" && current.length > 0) {
       current.push(call);
     } else if (call.op === "stroke" && current.length > 0) {
       segments.push(current);
+      stroked = current;
       current = [];
     }
   }
@@ -1105,6 +1122,58 @@ describe("updateSeriesAppearance deep merge", () => {
     const marker = engine.getMarkerConfig(0);
     expect(marker.size).toBe(10);
     expect(marker.shape).toBe("square"); // preserved
+  });
+});
+
+describe("lineRenderer dense line strokes", () => {
+  function strokeLine(pointCount: number, lineColor: string) {
+    const { engine, contexts } = createHarness({
+      animated: false,
+      legend: { visible: false },
+      rangeSelector: { visible: false },
+      seriesOptions: [{ type: "line", color: lineColor, width: 1.5 }],
+    });
+    const x = Float64Array.from({ length: pointCount }, (_, index) => index);
+    const y = Float64Array.from({ length: pointCount }, (_, index) => Math.sin(index / 5) * 10);
+    engine.handleMessage("setData", { x, series: [y] });
+    const calls = contexts
+      .flatMap((context) => context.pathCalls)
+      .filter((call) => call.strokeStyle === lineColor);
+    return { calls, segments: getStrokeSegments(contexts, lineColor) };
+  }
+
+  it("strokes a long opaque line in pieces that share their end vertices", () => {
+    const { calls, segments } = strokeLine(600, "#3366ff");
+
+    const pieces: PathCall[][] = [];
+    let piece: PathCall[] = [];
+    for (const call of calls) {
+      if (call.op === "moveTo") piece = [call];
+      else if (call.op === "lineTo") piece.push(call);
+      else if (call.op === "stroke" && piece.length > 1) pieces.push(piece);
+    }
+    expect(pieces.length).toBeGreaterThan(1);
+    for (let index = 0; index < pieces.length; index++) {
+      expect(pieces[index].length).toBeLessThanOrEqual(65);
+      if (index === 0) continue;
+      const previousEnd = pieces[index - 1].at(-1)!;
+      expect(pieces[index][0]).toMatchObject({ x: previousEnd.x, y: previousEnd.y });
+    }
+    // Joined at the shared vertices, the pieces are the one original polyline.
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toHaveLength(600);
+  });
+
+  it("keeps translucent and short lines in a single stroke", () => {
+    for (const { pointCount, lineColor } of [
+      { pointCount: 600, lineColor: "rgba(51, 102, 255, 0.5)" },
+      { pointCount: 200, lineColor: "#3366ff" },
+    ]) {
+      const { calls } = strokeLine(pointCount, lineColor);
+      expect(calls.filter((call) => call.op === "stroke")).toHaveLength(1);
+      expect(calls.filter((call) => call.op === "moveTo")).toHaveLength(1);
+      expect(calls.filter((call) => call.op === "lineTo")).toHaveLength(pointCount - 1);
+    }
   });
 });
 

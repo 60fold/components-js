@@ -204,6 +204,12 @@ export function createLineChartEngine(
   const RANGE_RENDER_WORK_PER_PIXEL_LIMIT = 6;
   const DENSE_STEP_RECT_MIN_POINTS = 256;
   const DENSE_STEP_RECT_MAX_WIDTH = 2;
+  // Canvas2D rasterizes one long, dense, self-overlapping stroke far slower
+  // than the same stroke cut into short pieces. Opaque lines of at least
+  // DENSE_LINE_PIECE_MIN_POINTS vertices are therefore stroked in pieces that
+  // share an end vertex; their round caps meet exactly like a round join.
+  const DENSE_LINE_PIECE_MIN_POINTS = 256;
+  const DENSE_LINE_PIECE_POINTS = 64;
   // Preserve a bounded set of meaningful finite runs inside a coarse bucket.
   // Fragmented connected series retain the runs containing global extrema and
   // the longest run; singleton-only buckets collapse to a break.
@@ -6092,6 +6098,15 @@ export function createLineChartEngine(
     if (!useStepPath && interpolation === "spline") {
       appendSplineLinePath(ctx, data, xRange, yRange);
     } else if (!useStepPath) {
+      // Overlapping caps would blend twice on a translucent stroke, so only an
+      // opaque line is split.
+      const pieceLength =
+        data.length >= DENSE_LINE_PIECE_MIN_POINTS &&
+        isOpaqueColor(color) &&
+        (ctx.globalAlpha ?? 1) >= 1
+          ? DENSE_LINE_PIECE_POINTS
+          : 0;
+      let pieceSegments = 0;
       forEachRenderPoint(data, (x, y) => {
         if (!Number.isFinite(y)) {
           needsMoveTo = true;
@@ -6107,6 +6122,12 @@ export function createLineChartEngine(
           needsMoveTo = false;
         } else {
           ctx.lineTo(screenX, screenY);
+          if (pieceLength > 0 && ++pieceSegments >= pieceLength) {
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(screenX, screenY);
+            pieceSegments = 0;
+          }
         }
       });
     } else {
