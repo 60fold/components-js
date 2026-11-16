@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   calculateStep,
   calculateTimeStep,
+  formatPrice,
   formatTimeLabel,
   formatVolume,
   ensurePositiveSpan,
@@ -117,6 +118,39 @@ describe("chartUtils", () => {
     expect(formatVolume(0.00001)).toBe("1.00e-5");
     expect(formatVolume(1_200)).toBe("1.20K");
     expect(formatVolume(2_500_000)).toBe("2.50M");
+  });
+
+  it("formats grouped prices and small volumes like toLocaleString", () => {
+    for (const price of [1000, 1234.5, 98_765.49, -4_200.5, 1e9]) {
+      expect(formatPrice(price)).toBe(
+        price.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+      );
+    }
+    expect(formatPrice(12.345)).toBe("12.35");
+    expect(formatPrice(0.5)).toBe("0.5000");
+    for (const volume of [0.5, 12.34567, 999.99994, -3.25]) {
+      expect(formatVolume(volume)).toBe(
+        volume.toLocaleString(undefined, { maximumFractionDigits: 4 }),
+      );
+    }
+  });
+
+  it("reuses one number formatter across repeated price and volume labels", () => {
+    formatPrice(1500);
+    formatVolume(12.5);
+    const numberFormat = vi.spyOn(Intl, "NumberFormat");
+    const toLocaleString = vi.spyOn(Number.prototype, "toLocaleString");
+    try {
+      for (let index = 0; index < 50; index++) {
+        formatPrice(1000 + index);
+        formatVolume(index + 0.25);
+      }
+      expect(numberFormat).not.toHaveBeenCalled();
+      expect(toLocaleString).not.toHaveBeenCalled();
+    } finally {
+      numberFormat.mockRestore();
+      toLocaleString.mockRestore();
+    }
   });
 
   it("formats time labels with an explicit locale", () => {
