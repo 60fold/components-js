@@ -1294,6 +1294,9 @@ export function createLineChartEngine(
   let lodLevelsBuilt = 0;
   interface LODBuild {
     sourceDataLength: number;
+    // Set while a streaming hierarchy is extended: the source is only the tail
+    // of the samples, so a level is built even when that tail is one bucket.
+    tail?: boolean;
     sourceStartIndex: number;
     x: Float64Array;
     series: Float64Array[];
@@ -2144,9 +2147,12 @@ export function createLineChartEngine(
     updateRawLODLevelLengths();
     invalidateDataCaches();
 
-    if (dataLength > 1000 && (!hasBuiltLOD() || previousDataLength === 0)) {
+    if (activeLODBuild && !lodRebuildRequested) {
+      // The running build publishes its snapshot; its completion then extends
+      // that hierarchy with everything appended in the meantime.
+    } else if (dataLength > 1000 && (!hasBuiltLOD() || previousDataLength === 0)) {
       buildLODLevels();
-    } else {
+    } else if (!extendStreamingLODLevels()) {
       scheduleLODRebuild();
     }
     previousDataLength = dataLength;
@@ -2258,6 +2264,232 @@ export function createLineChartEngine(
         yMax: nextY.max,
       };
     }
+  }
+
+  /** A typed array with room for `length` items, keeping its first `used`. */
+  function growLODArray<T extends Float64Array | Uint32Array | Uint8Array>(
+    array: T,
+    used: number,
+    length: number,
+  ): T {
+    if (array.length >= length) return array;
+    const grown = new (array.constructor as new (length: number) => T)(
+      Math.max(length, Math.ceil(array.length * 1.5)),
+    );
+    grown.set(array.subarray(0, used) as never);
+    return grown;
+  }
+
+  /** `length` ring samples starting at absolute sample index `start`, in order. */
+  function readRingSpan(column: Float64Array, start: number, length: number): Float64Array {
+    const physicalStart = start % ringBufferMaxPoints;
+    if (physicalStart + length <= ringBufferMaxPoints) {
+      return column.subarray(physicalStart, physicalStart + length);
+    }
+    const span = new Float64Array(length);
+    const firstLength = ringBufferMaxPoints - physicalStart;
+    span.set(column.subarray(physicalStart));
+    span.set(column.subarray(0, length - firstLength), firstLength);
+    return span;
+  }
+
+  /**
+   * Append the buckets of a freshly built tail level to a published level.
+   * The tail starts at bucket `firstBucket` of the published level, replacing
+   * its previous partial bucket, so the result equals a full build over the
+   * same source.
+   */
+  function appendLODLevelTail(
+    level: LODLevel,
+    tail: LODLevel,
+    firstBucket: number,
+    sourceDataLength: number,
+  ): void {
+    const bucketSize = level.bucketSize;
+    const bucketCount = firstBucket + tail.bucketCount;
+
+    level.data = growLODArray(level.data, firstBucket * 8, bucketCount * 8);
+    level.data.set(tail.data, firstBucket * 8);
+    level.internalGapBuckets = growLODArray(level.internalGapBuckets, firstBucket, bucketCount);
+    level.internalGapBuckets.set(tail.internalGapBuckets, firstBucket);
+
+    level.renderOffsets = growLODArray(level.renderOffsets, firstBucket + 1, bucketCount + 1);
+    const renderBase = level.renderOffsets[firstBucket];
+    for (let bucket = 1; bucket <= tail.bucketCount; bucket++) {
+      level.renderOffsets[firstBucket + bucket] = renderBase + tail.renderOffsets[bucket];
+    }
+
+    const tailHasGaps = tail.gapOffsets.length > 0;
+    if (level.gapOffsets.length > 0 || tailHasGaps) {
+      // Offsets stay zero up to the first gap bucket, as in a full build.
+      level.gapOffsets = growLODArray(
+        level.gapOffsets,
+        Math.min(level.gapOffsets.length, firstBucket + 1),
+        bucketCount + 1,
+      );
+      const gapBase = level.gapOffsets[firstBucket];
+      for (let bucket = 1; bucket <= tail.bucketCount; bucket++) {
+        level.gapOffsets[firstBucket + bucket] =
+          gapBase + (tailHasGaps ? tail.gapOffsets[bucket] : 0);
+      }
+      const tailGapPoints = tailHasGaps ? tail.gapOffsets[tail.bucketCount] : 0;
+      level.gapData = growLODArray(level.gapData, gapBase * 2, (gapBase + tailGapPoints) * 2);
+      level.gapData.set(tail.gapData.subarray(0, tailGapPoints * 2), gapBase * 2);
+      level.gapSourceIndices = growLODArray(
+        level.gapSourceIndices,
+        gapBase,
+        gapBase + tailGapPoints,
+      );
+      // Tail indices are relative to the tail; the level stores source indices.
+      const indexOffset = firstBucket * bucketSize;
+      for (let point = 0; point < tailGapPoints; point++) {
+        const sourceIndex = tail.gapSourceIndices[point];
+        level.gapSourceIndices[gapBase + point] =
+          sourceIndex === GAP_BREAK_SOURCE_INDEX ? sourceIndex : sourceIndex + indexOffset;
+      }
+    }
+
+    level.bucketCount = bucketCount;
+    level.sourceDataLength = sourceDataLength;
+  }
+
+  /**
+   * Drop whole buckets that the ring no longer retains from the front of a
+   * level. `droppedSamples` is a multiple of every bucket size, so all levels
+   * stay aligned to the same source index.
+   */
+  function dropLODLevelPrefix(level: LODLevel, droppedSamples: number): void {
+    const dropped = droppedSamples / level.bucketSize;
+    const bucketCount = level.bucketCount - dropped;
+    level.data.copyWithin(0, dropped * 8, level.bucketCount * 8);
+    level.internalGapBuckets.copyWithin(0, dropped, level.bucketCount);
+
+    const renderBase = level.renderOffsets[dropped];
+    for (let bucket = 0; bucket <= bucketCount; bucket++) {
+      level.renderOffsets[bucket] = level.renderOffsets[bucket + dropped] - renderBase;
+    }
+
+    if (level.gapOffsets.length > 0) {
+      const gapBase = level.gapOffsets[dropped];
+      const gapPoints = level.gapOffsets[level.bucketCount] - gapBase;
+      for (let bucket = 0; bucket <= bucketCount; bucket++) {
+        level.gapOffsets[bucket] = level.gapOffsets[bucket + dropped] - gapBase;
+      }
+      level.gapData.copyWithin(0, gapBase * 2, (gapBase + gapPoints) * 2);
+      for (let point = 0; point < gapPoints; point++) {
+        const sourceIndex = level.gapSourceIndices[gapBase + point];
+        level.gapSourceIndices[point] =
+          sourceIndex === GAP_BREAK_SOURCE_INDEX ? sourceIndex : sourceIndex - droppedSamples;
+      }
+    }
+
+    level.bucketCount = bucketCount;
+    level.sourceDataLength -= droppedSamples;
+    level.sourceStartIndex += droppedSamples;
+  }
+
+  /**
+   * Bring a completed ring-buffer hierarchy up to date with the samples
+   * appended since it was built, at a cost proportional to those samples
+   * rather than to the buffer. Each level keeps the source index it was built
+   * from and gains only its new buckets, so it stays identical to a full build
+   * over the same source. Returns false when the hierarchy cannot be extended
+   * and has to be rebuilt.
+   */
+  function extendStreamingLODLevels(): boolean {
+    if (!ringBufferMode || !dataX || activeLODBuild || lodRebuildRequested || !hasBuiltLOD()) {
+      return false;
+    }
+
+    const seriesCount = seriesConfig.count;
+    const reference = lodLevelsBySeries[0];
+    const sourceStartIndex = reference[reference.length - 1].sourceStartIndex;
+    const windowStart = totalPointsReceived - dataLength;
+    const sourceDataLength = totalPointsReceived - sourceStartIndex;
+    const coarsestBucketSize = LOD_BUCKET_SIZES[LOD_BUCKET_SIZES.length - 1];
+
+    for (let levelIdx = 1; levelIdx < LOD_BUCKET_SIZES.length; levelIdx++) {
+      const bucketSize = LOD_BUCKET_SIZES[levelIdx];
+      const existing = reference.find((level) => level.bucketSize === bucketSize);
+      // A full build holds a level only once the retained samples outgrow it.
+      if (!existing && (bucketSize >= dataLength || bucketSize >= sourceDataLength)) continue;
+
+      const builtLength = existing ? existing.sourceDataLength : 0;
+      if (builtLength === sourceDataLength) continue;
+      const firstBucket = Math.floor(builtLength / bucketSize);
+      const tailStart = sourceStartIndex + firstBucket * bucketSize;
+      // The first bucket to (re)build must still be retained by the ring.
+      if (builtLength > sourceDataLength || tailStart < windowStart) return false;
+
+      for (let s = 0; s < seriesCount; s++) {
+        const level = lodLevelsBySeries[s]?.find((item) => item.bucketSize === bucketSize);
+        if (
+          !!level !== !!existing ||
+          (level &&
+            (level.sourceDataLength !== builtLength || level.sourceStartIndex !== sourceStartIndex))
+        ) {
+          return false;
+        }
+      }
+
+      const tailLength = sourceDataLength - firstBucket * bucketSize;
+      // A fresh build per level holds no finer level, so the tail is always
+      // summarized from its own samples.
+      const build: LODBuild = {
+        sourceDataLength: tailLength,
+        sourceStartIndex,
+        x: readRingSpan(dataX, tailStart, tailLength),
+        series: dataSeries.map((column) => readRingSpan(column, tailStart, tailLength)),
+        levels: lodLevelsBySeries.map((levels) => [levels[0]]),
+        rangeLevels: lodLevelsBySeries.map(() => null),
+        tail: true,
+      };
+      activeLODBuild = build;
+      try {
+        buildLODLevel(levelIdx, tailLength);
+      } finally {
+        activeLODBuild = null;
+      }
+
+      for (let s = 0; s < seriesCount; s++) {
+        const tail = build.levels[s].find((item) => item.bucketSize === bucketSize);
+        if (!tail) return false;
+        const levels = lodLevelsBySeries[s];
+        let level = levels.find((item) => item.bucketSize === bucketSize);
+        if (!level) {
+          level = {
+            bucketSize,
+            bucketCount: 0,
+            sourceDataLength: 0,
+            sourceStartIndex,
+            data: new Float64Array(0),
+            internalGapBuckets: new Uint8Array(0),
+            gapData: new Float64Array(0),
+            gapSourceIndices: new Uint32Array(0),
+            gapOffsets: new Uint32Array(0),
+            renderOffsets: new Uint32Array(1),
+          };
+          const insertIdx = levels.findIndex((item) => item.bucketSize > bucketSize);
+          if (insertIdx === -1) levels.push(level);
+          else levels.splice(insertIdx, 0, level);
+        }
+        appendLODLevelTail(level, tail, firstBucket, sourceDataLength);
+      }
+    }
+
+    // Buckets the ring has evicted are never read again. Dropping them in
+    // multiples of the coarsest bucket keeps every level aligned and the
+    // arrays bounded by the buffer.
+    const staleSamples = windowStart - sourceStartIndex;
+    if (staleSamples >= Math.max(coarsestBucketSize, dataLength >> 1)) {
+      const droppedSamples = Math.floor(staleSamples / coarsestBucketSize) * coarsestBucketSize;
+      for (let s = 0; s < seriesCount; s++) {
+        for (const level of lodLevelsBySeries[s]) {
+          if (level.bucketSize > 1) dropLODLevelPrefix(level, droppedSamples);
+        }
+      }
+    }
+    return true;
   }
 
   function buildLODLevels() {
@@ -3056,7 +3288,7 @@ export function createLineChartEngine(
 
   function buildLODLevel(levelIdx: number, sourceDataLength: number) {
     const bucketSize = LOD_BUCKET_SIZES[levelIdx];
-    if (bucketSize >= sourceDataLength) return;
+    if (bucketSize >= sourceDataLength && !activeLODBuild!.tail) return;
 
     for (let s = 0; s < seriesConfig.count; s++) {
       const bucketCount = Math.ceil(sourceDataLength / bucketSize);
@@ -3237,7 +3469,17 @@ export function createLineChartEngine(
       state.rangePreviewValid = false; // Re-render preview with final LOD levels
       resetCachedYMinMax();
       scheduleRender();
-      if (lodRebuildRequested) scheduleLODRebuild();
+      if (lodRebuildRequested) {
+        scheduleLODRebuild();
+      } else if (
+        ringBufferMode &&
+        totalPointsReceived !== build.sourceStartIndex + build.sourceDataLength &&
+        !extendStreamingLODLevels()
+      ) {
+        // Samples arrived while this snapshot was building and it cannot be
+        // extended to cover them.
+        scheduleLODRebuild();
+      }
       return;
     }
 
