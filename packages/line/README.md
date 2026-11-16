@@ -83,6 +83,13 @@ attached and queued samples unchanged. Valid scalar and bulk calls retain their
 order, and ring-buffer wrap preserves chronological display. Use `NaN` in a Y
 column for a gap, never in the timestamp column.
 
+The level-of-detail hierarchy is built once and then kept current as samples
+arrive. Each append summarizes only the new samples, so its cost does not grow
+with the buffer, and `stats.lodReady` stays `true` after the first build. A
+single append that replaces more of the buffer than the chart still retains
+rebuilds the hierarchy in the background; the previous levels stay usable until
+the rebuild completes.
+
 `initStreaming` discards queued samples from the previous stream. Resetting
 streaming or replacing data cancels a pending viewport animation for the old
 dataset so it cannot restore an obsolete X range.

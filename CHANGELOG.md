@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+Changes since 1.0.2. No public API changes.
+
+### Performance
+
+- Keep the Line streaming LOD hierarchy current by summarizing only the appended
+  samples. Appends no longer rebuild every level or copy a full ring buffer, and
+  `lodReady` stays true after the first build. A single append that replaces
+  more of the buffer than the chart retains still rebuilds in the background.
+- Build static Line LOD hierarchies with two scans of the samples instead of
+  six: the coarsest and finest summary levels read the samples, and each level
+  between them folds the level below wherever it holds no gap. Levels are
+  published in the same order as before.
+- Summarize gap-free adaptive presentation columns without run bookkeeping, and
+  search column boundaries once for all series that share the X column.
+- Reuse number and date formatters for Core price, volume, and tooltip-title
+  labels instead of constructing one per label.
+- Stroke long opaque Line series in pieces of 64 segments that share their end
+  vertices, which Canvas2D rasterizes faster than one long stroke. Anti-aliasing
+  where two pieces meet can differ slightly from a single stroke; translucent
+  and short lines are unchanged.
+
+### Developer tooling
+
+- Raise the Line package and browser-runtime gzip budgets for the reviewed
+  growth above. A clean initial worker-mode Line consumer grows by about 2.5 kB.
+
 ## 1.0.2 (2026-11-01)
 
 Changes since 1.0.1. No public API changes.

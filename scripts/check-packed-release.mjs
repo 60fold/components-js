@@ -30,8 +30,11 @@ const aggregateGzipBudgets = Object.freeze({
   // Core ships unminified with preserveModules, so this counts JSDoc a browser
   // never downloads; the browser runtime budgets below are the wire-size gate.
   // Reviewed 1.0.1 merge hardening and documentation growth retain explicit headroom.
+  // Line also carries the incremental streaming hierarchy, level folding, and
+  // gap-free presentation columns; its renderer ships in the worker and the
+  // lazy main-thread chunk, so that growth is counted twice here.
   "@sixtyfold/core": 62_000,
-  "@sixtyfold/line": 82_000,
+  "@sixtyfold/line": 87_000,
   "@sixtyfold/stock": 63_000,
   "@sixtyfold/ssr": 3_000,
   // The archive contains the combined catalog plus independently consumable
@@ -46,20 +49,22 @@ const aggregateGzipBudgets = Object.freeze({
 });
 const initialWorkerBrowserRuntimeGzipBudgets = Object.freeze({
   // Reviewed 1.0.1 growth includes streaming validation and lifecycle fixes.
+  // Reviewed Line growth adds about 2.5 kB for the incremental streaming
+  // hierarchy, level folding, and gap-free presentation columns.
   // Keep an explicit allowance above measured wire size, not a fixed payload claim.
-  line: 65_000,
+  line: 68_000,
   stock: 57_000,
 });
 const browserRuntimeGzipBudgets = Object.freeze({
-  line: 67_000,
+  line: 70_000,
   stock: 59_000,
 });
 const initialMainThreadBrowserRuntimeGzipBudgets = Object.freeze({
-  line: 64_000,
+  line: 67_000,
   stock: 56_000,
 });
 const mainThreadBrowserRuntimeGzipBudgets = Object.freeze({
-  line: 66_000,
+  line: 69_000,
   stock: 58_000,
 });
 const prohibitedNetworkPatterns = Object.freeze([
