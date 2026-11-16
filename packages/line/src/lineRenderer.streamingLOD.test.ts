@@ -119,27 +119,142 @@ describe("line streaming LOD snapshots", () => {
     vi.useRealTimers();
   });
 
-  it.each([2, 4, 16])("completes repeated full-ring builds during %dms appends", (cadence) => {
-    const chart = harness(2048);
-    chart.append(0, 2048);
-    let next = 2048;
-    let completeBuilds = 0;
-    let wasReady = false;
-    for (let elapsed = 0; elapsed < 1800; elapsed += cadence) {
-      chart.append(next++);
-      vi.advanceTimersByTime(cadence);
-      const { stats } = chart.render(next - 2048, next - 1);
-      if (stats.lodReady && !wasReady) completeBuilds++;
-      wasReady = Boolean(stats.lodReady);
-      if (stats.lodReady) expect(stats.lodBuilt).toBe(stats.lodTotal);
+  it.each([2, 4, 16])(
+    "builds a full ring once and keeps it ready during %dms appends",
+    (cadence) => {
+      const chart = harness(2048);
+      chart.append(0, 2048);
+      let next = 2048;
+      let completeBuilds = 0;
+      let wasReady = false;
+      for (let elapsed = 0; elapsed < 1800; elapsed += cadence) {
+        chart.append(next++);
+        vi.advanceTimersByTime(cadence);
+        const { stats } = chart.render(next - 2048, next - 1);
+        if (stats.lodReady && !wasReady) completeBuilds++;
+        wasReady = Boolean(stats.lodReady);
+        if (stats.lodReady) expect(stats.lodBuilt).toBe(stats.lodTotal);
+      }
+      // Appends extend the completed hierarchy in place, so it never returns
+      // to the building state while samples keep arriving.
+      expect(completeBuilds).toBe(1);
+      vi.advanceTimersByTime(200);
+      expect(chart.render(next - 2048, next - 1).stats).toMatchObject({
+        lodReady: true,
+        lodBuilt: 7,
+        totalReceived: next,
+      });
+    },
+  );
+
+  it("summarizes appended samples at once instead of waiting for a rebuild", () => {
+    const chart = harness(16_384);
+    chart.append(0, 16_384);
+    vi.advanceTimersByTime(60);
+    expect(chart.render(0, 16_383).stats.lodReady).toBe(true);
+
+    // No timer advances from here on, so no scheduled rebuild can run.
+    let received = 16_384;
+    for (const count of [1, 7, 8, 250, 3, 1_000, 61, 2_700]) {
+      chart.append(received, count);
+      received += count;
     }
-    expect(completeBuilds).toBeGreaterThanOrEqual(3);
+    const actual = chart.render(received - 4_000, received - 1);
+    expect(actual.stats).toMatchObject({ lodReady: true, lodBuilt: 7 });
+    // The newest 4,000 samples are covered by summary buckets, not read raw.
+    expect(actual.stats.presentationLargestBucket).toBeGreaterThan(1);
+    expect(actual.stats.presentationQueryVisits as number).toBeLessThan(2_000);
+
+    const reference = harness(16_384, true);
+    reference.append(0, received);
+    expect(actual.points.length).toBeGreaterThan(0);
+    expect(actual.points).toEqual(reference.render(received - 4_000, received - 1).points);
+  });
+
+  it.each([2_048, 4_096, 20_000])(
+    "stays geometrically current from an empty %d-point ring through repeated wraps",
+    (capacity) => {
+      const chart = harness(capacity);
+      let received = 0;
+      let batch = 0;
+      const target = capacity + 40_000;
+      let nextCheck = 600;
+      while (received < target) {
+        // Varying batch sizes cross every bucket boundary and the ring edge.
+        const count = 1 + ((batch * 131 + 17) % 229);
+        chart.append(received, count);
+        received += count;
+        batch++;
+        if (batch === 12) vi.advanceTimersByTime(200);
+        if (received < nextCheck) continue;
+        nextCheck = received + 4_700;
+
+        const start = Math.max(0, received - capacity);
+        const actual = chart.render(start, received - 1);
+        const reference = harness(capacity, true);
+        reference.append(0, received);
+        expect(actual.points).toEqual(reference.render(start, received - 1).points);
+        reference.engine.handleMessage("stop", {});
+      }
+      expect(chart.render(received - capacity, received - 1).stats).toMatchObject({
+        lodReady: true,
+        lodBuilt: 7,
+        totalReceived: received,
+      });
+    },
+  );
+
+  it("does not copy the retained buffer while a full ring keeps receiving samples", () => {
+    const capacity = 16_384;
+    const chart = harness(capacity);
+    chart.append(0, capacity);
+    vi.advanceTimersByTime(60);
+    expect(chart.render(0, capacity - 1).stats.lodReady).toBe(true);
+
+    const NativeFloat64Array = Float64Array;
+    let bufferSizedAllocations = 0;
+    class CountingFloat64Array extends NativeFloat64Array {
+      constructor(
+        source?: number | ArrayLike<number> | ArrayBufferLike,
+        byteOffset?: number,
+        length?: number,
+      ) {
+        // The buffer overload accepts every argument shape at runtime: a
+        // length, another array, or a buffer with an optional view range.
+        super(source as ArrayBuffer, byteOffset, length);
+        if (typeof source === "number" && source >= capacity) bufferSizedAllocations++;
+      }
+    }
+    vi.stubGlobal("Float64Array", CountingFloat64Array);
+    let received = capacity;
+    for (let step = 0; step < 120; step++) {
+      chart.append(received, 5);
+      received += 5;
+      vi.advanceTimersByTime(16);
+    }
+    vi.advanceTimersByTime(600);
+    vi.stubGlobal("Float64Array", NativeFloat64Array);
+
+    expect(bufferSizedAllocations).toBe(0);
+    expect(chart.render(received - capacity, received - 1).stats.lodReady).toBe(true);
+  });
+
+  it("rebuilds when one append replaces more of the ring than the hierarchy can extend", () => {
+    const chart = harness(16_384);
+    chart.append(0, 16_384);
+    vi.advanceTimersByTime(60);
+    expect(chart.render(0, 16_383).stats.lodReady).toBe(true);
+
+    chart.append(16_384, 17_001);
+    vi.advanceTimersByTime(105);
+    expect(chart.render(17_001, 33_384).stats.lodReady).toBe(false);
     vi.advanceTimersByTime(200);
-    expect(chart.render(next - 2048, next - 1).stats).toMatchObject({
-      lodReady: true,
-      lodBuilt: 7,
-      totalReceived: next,
-    });
+    const actual = chart.render(17_001, 33_384);
+    expect(actual.stats).toMatchObject({ lodReady: true, lodBuilt: 7 });
+
+    const reference = harness(16_384, true);
+    reference.append(0, 33_385);
+    expect(actual.points).toEqual(reference.render(17_001, 33_384).points);
   });
 
   it.each([16, 17, 2100])(
