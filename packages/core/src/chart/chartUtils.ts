@@ -311,9 +311,18 @@ export function calculateTimeStep(range: number, targetSteps: number, xMin?: num
   return Math.ceil(rawStep / lastInterval) * lastInterval;
 }
 
+// Number.prototype.toLocaleString builds a new Intl.NumberFormat on every call.
+// Axis and tooltip labels are formatted on every redraw, so reuse one formatter
+// per shape. Each is created lazily and formats exactly like toLocaleString.
+let wholePriceFormatter: Intl.NumberFormat | undefined;
+let smallVolumeFormatter: Intl.NumberFormat | undefined;
+
 // Format price for display
 export function formatPrice(price: number): string {
-  if (Math.abs(price) >= 1000) return price.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (Math.abs(price) >= 1000) {
+    wholePriceFormatter ??= new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+    return wholePriceFormatter.format(price);
+  }
   if (Math.abs(price) >= 1) return price.toFixed(2);
   if (Math.abs(price) < 0.000001 && price !== 0) return price.toExponential(2);
   return price.toFixed(4);
@@ -327,7 +336,8 @@ export function formatVolume(vol: number): string {
   if (absVolume >= 1e6) return sign + (absVolume / 1e6).toFixed(2) + "M";
   if (absVolume >= 1e3) return sign + (absVolume / 1e3).toFixed(2) + "K";
   if (absVolume < 0.0001 && absVolume !== 0) return vol.toExponential(2);
-  return vol.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  smallVolumeFormatter ??= new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
+  return smallVolumeFormatter.format(vol);
 }
 
 // Format time label based on range

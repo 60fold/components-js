@@ -1004,15 +1004,47 @@ export function formatTooltipTitle(value: number, format: XAxisFormat | null): s
     const isMilliseconds = value > 1e11;
     const tsMs = isMilliseconds ? value : value * 1000;
     const timeOptions = isTimeFormatOptions(format) ? format : undefined;
-    return new Date(tsMs).toLocaleString(
-      timeOptions?.locale,
-      buildIntlDateTimeOptions(timeOptions),
-    );
+    const date = new Date(tsMs);
+    // Intl.DateTimeFormat.format throws for an invalid date, whereas
+    // toLocaleString returns "Invalid Date"; keep that result.
+    if (Number.isNaN(date.getTime())) {
+      return date.toLocaleString(timeOptions?.locale, buildIntlDateTimeOptions(timeOptions));
+    }
+    return getTooltipTitleFormatter(timeOptions).format(date);
   } else if (format === "number" || format === null) {
     return value.toFixed(0);
   } else {
     return formatValue(value, format, 0);
   }
+}
+
+// The tooltip title is formatted on every hover frame. Date.prototype
+// toLocaleString builds a new Intl.DateTimeFormat per call, so keep a small
+// bounded set of formatters keyed by the options that reach it.
+const MAX_TOOLTIP_TITLE_FORMATTERS = 16;
+const tooltipTitleFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function getTooltipTitleFormatter(options: TimeFormatOptions | undefined): Intl.DateTimeFormat {
+  const key = `${String(options?.locale ?? "")}\u0000${options?.timeZone ?? ""}\u0000${String(options?.hour12 ?? "")}`;
+  let formatter = tooltipTitleFormatters.get(key);
+  if (!formatter) {
+    // toLocaleString defaults to a numeric date and time when no field is
+    // requested; the constructor alone would default to the date only.
+    formatter = new Intl.DateTimeFormat(options?.locale, {
+      ...buildIntlDateTimeOptions(options),
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    if (tooltipTitleFormatters.size >= MAX_TOOLTIP_TITLE_FORMATTERS) {
+      tooltipTitleFormatters.delete(tooltipTitleFormatters.keys().next().value!);
+    }
+    tooltipTitleFormatters.set(key, formatter);
+  }
+  return formatter;
 }
 
 function isTimeFormatOptions(format: XAxisFormat | null): format is TimeFormatOptions {
