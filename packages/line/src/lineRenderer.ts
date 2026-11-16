@@ -3869,6 +3869,159 @@ export function createLineChartEngine(
     return targetOffset;
   }
 
+  // Columns the gap-aware path must handle after a gap-free attempt failed.
+  // Gap-bearing data tends to cluster, so skipping the attempt for the next few
+  // columns bounds the work a failed attempt repeats.
+  const PRESENTATION_GAP_FREE_RETRY_COLUMNS = 8;
+  let presentationGapAwareColumnsRemaining = 0;
+
+  /**
+   * Summarize a column whose samples are all finite without the run scratch.
+   * Such a column is one unbroken run, so first/min/max/last fold into locals.
+   * Returns 0, leaving the query counters untouched, as soon as a gap, a
+   * compact-gap bucket, or a non-finite value shows the column needs the
+   * gap-aware path; that path then recomputes the whole column.
+   */
+  function writeGapFreePresentationColumn(
+    seriesIndex: number,
+    startIdx: number,
+    endIdx: number,
+    target: Float64Array,
+    targetBase: number,
+  ): number {
+    const levels = lodLevelsBySeries[seriesIndex];
+    let cursor = startIdx;
+    let order = 0;
+    let visits = 0;
+    let largestBucket = 0;
+    let firstX = 0;
+    let firstY = 0;
+    let minX = 0;
+    let minY = 0;
+    let minOrder = 0;
+    let maxX = 0;
+    let maxY = 0;
+    let maxOrder = 0;
+    let lastX = 0;
+    let lastY = 0;
+
+    while (cursor <= endIdx) {
+      let selectedLevel: LODLevel | null = null;
+      let selectedBucket = -1;
+      const remaining = endIdx - cursor + 1;
+
+      for (
+        let levelIndex = largestContainedLODIndex(levels, cursor, remaining);
+        levelIndex >= 1;
+        levelIndex--
+      ) {
+        visits++;
+        const level = levels[levelIndex];
+        const bucket = (cursor + getLODSourceOffset(level)) / level.bucketSize;
+        if (
+          bucket < 0 ||
+          bucket >= level.bucketCount ||
+          !isLODSourceCurrentForBucket(level, bucket)
+        ) {
+          continue;
+        }
+        if (level.internalGapBuckets[bucket] !== 0) return 0;
+        selectedLevel = level;
+        selectedBucket = bucket;
+        break;
+      }
+
+      if (selectedLevel) {
+        const data = selectedLevel.data;
+        const sourceBase = selectedBucket * 8;
+        // A finite sum of the bucket proves all eight stored values are finite.
+        const sum =
+          data[sourceBase] +
+          data[sourceBase + 1] +
+          data[sourceBase + 2] +
+          data[sourceBase + 3] +
+          data[sourceBase + 4] +
+          data[sourceBase + 5] +
+          data[sourceBase + 6] +
+          data[sourceBase + 7];
+        if (sum - sum !== 0) return 0;
+
+        for (let pointBase = sourceBase; pointBase < sourceBase + 8; pointBase += 2) {
+          const x = data[pointBase];
+          const y = data[pointBase + 1];
+          if (order === 0) {
+            firstX = minX = maxX = x;
+            firstY = minY = maxY = y;
+          } else {
+            if (y < minY) {
+              minX = x;
+              minY = y;
+              minOrder = order;
+            }
+            if (y > maxY) {
+              maxX = x;
+              maxY = y;
+              maxOrder = order;
+            }
+          }
+          lastX = x;
+          lastY = y;
+          order++;
+        }
+        cursor += selectedLevel.bucketSize;
+        if (selectedLevel.bucketSize > largestBucket) largestBucket = selectedLevel.bucketSize;
+        continue;
+      }
+
+      visits++;
+      const x = getXAt(cursor);
+      const y = getYAt(seriesIndex, cursor);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+      if (order === 0) {
+        firstX = minX = maxX = x;
+        firstY = minY = maxY = y;
+      } else {
+        if (y < minY) {
+          minX = x;
+          minY = y;
+          minOrder = order;
+        }
+        if (y > maxY) {
+          maxX = x;
+          maxY = y;
+          maxOrder = order;
+        }
+      }
+      lastX = x;
+      lastY = y;
+      order++;
+      cursor++;
+    }
+
+    if (order === 0) return 0;
+
+    lastPresentationQueryVisits += visits;
+    if (largestBucket > lastPresentationLargestBucket) {
+      lastPresentationLargestBucket = largestBucket;
+    }
+    target[targetBase] = firstX;
+    target[targetBase + 1] = firstY;
+    if (minOrder <= maxOrder) {
+      target[targetBase + 2] = minX;
+      target[targetBase + 3] = minY;
+      target[targetBase + 4] = maxX;
+      target[targetBase + 5] = maxY;
+    } else {
+      target[targetBase + 2] = maxX;
+      target[targetBase + 3] = maxY;
+      target[targetBase + 4] = minX;
+      target[targetBase + 5] = minY;
+    }
+    target[targetBase + 6] = lastX;
+    target[targetBase + 7] = lastY;
+    return 4;
+  }
+
   function writeHierarchicalPresentationColumn(
     seriesIndex: number,
     startIdx: number,
@@ -3881,6 +4034,20 @@ export function createLineChartEngine(
   ): number {
     if (targetBase + PRESENTATION_MAX_POINTS_PER_COLUMN * 2 > target.length) {
       return -1;
+    }
+
+    if (presentationGapAwareColumnsRemaining > 0) {
+      presentationGapAwareColumnsRemaining--;
+    } else {
+      const written = writeGapFreePresentationColumn(
+        seriesIndex,
+        startIdx,
+        endIdx,
+        target,
+        targetBase,
+      );
+      if (written > 0) return written;
+      presentationGapAwareColumnsRemaining = PRESENTATION_GAP_FREE_RETRY_COLUMNS;
     }
 
     for (let slot = 0; slot < PRESENTATION_RUN_SCRATCH_SLOTS; slot++) {
@@ -4624,6 +4791,89 @@ export function createLineChartEngine(
     return presentationResolvedRangeGridDelta;
   }
 
+  // Where each grid column ends depends only on the shared X column and the
+  // resolved grid, never on the series. One getRenderData pass therefore
+  // searches the boundaries once and every further series reuses them.
+  interface PresentationColumnStarts {
+    pass: number;
+    startIdx: number;
+    endIdx: number;
+    anchor: number;
+    delta: number;
+    firstGridIndex: number;
+    lastGridIndex: number;
+    starts: Int32Array;
+  }
+
+  function createPresentationColumnStarts(): PresentationColumnStarts {
+    return {
+      pass: -1,
+      startIdx: 0,
+      endIdx: 0,
+      anchor: 0,
+      delta: 0,
+      firstGridIndex: 0,
+      lastGridIndex: 0,
+      starts: new Int32Array(0),
+    };
+  }
+
+  let presentationRenderPass = 0;
+  // Centre lines and reduced-density range bands can resolve different grids
+  // in the same pass, so each keeps its own boundaries.
+  const centerPresentationColumnStarts = createPresentationColumnStarts();
+  const rangePresentationColumnStarts = createPresentationColumnStarts();
+
+  /** First source index after each grid column, indexed from firstGridIndex. */
+  function resolvePresentationColumnStarts(
+    cache: PresentationColumnStarts,
+    startIdx: number,
+    endIdx: number,
+    anchor: number,
+    delta: number,
+    firstGridIndex: number,
+    lastGridIndex: number,
+  ): Int32Array {
+    if (
+      cache.pass === presentationRenderPass &&
+      cache.startIdx === startIdx &&
+      cache.endIdx === endIdx &&
+      cache.anchor === anchor &&
+      cache.delta === delta &&
+      cache.firstGridIndex === firstGridIndex &&
+      cache.lastGridIndex === lastGridIndex
+    ) {
+      return cache.starts;
+    }
+
+    const columnCount = lastGridIndex - firstGridIndex + 1;
+    if (cache.starts.length < columnCount) {
+      cache.starts = new Int32Array(Math.max(columnCount, cache.starts.length * 2, 256));
+    }
+    const starts = cache.starts;
+    let columnStartIdx = startIdx;
+    for (
+      let gridIndex = firstGridIndex;
+      gridIndex <= lastGridIndex && columnStartIdx <= endIdx;
+      gridIndex++
+    ) {
+      columnStartIdx =
+        gridIndex === lastGridIndex
+          ? endIdx + 1
+          : lowerBoundDataX(anchor + (gridIndex + 1) * delta, columnStartIdx, endIdx + 1);
+      starts[gridIndex - firstGridIndex] = columnStartIdx;
+    }
+
+    cache.pass = presentationRenderPass;
+    cache.startIdx = startIdx;
+    cache.endIdx = endIdx;
+    cache.anchor = anchor;
+    cache.delta = delta;
+    cache.firstGridIndex = firstGridIndex;
+    cache.lastGridIndex = lastGridIndex;
+    return starts;
+  }
+
   function buildHierarchicalPresentationColumns(
     seriesIndex: number,
     startIdx: number,
@@ -4666,21 +4916,27 @@ export function createLineChartEngine(
     }
 
     const buffer = ensurePresentationColumnBuffer(seriesIndex, lastGridIndex - firstGridIndex + 1);
+    const columnStarts = resolvePresentationColumnStarts(
+      centerPresentationColumnStarts,
+      startIdx,
+      endIdx,
+      anchor,
+      delta,
+      firstGridIndex,
+      lastGridIndex,
+    );
     let columnCount = 0;
     let pointCount = 0;
     let columnStartIdx = startIdx;
     const preserveSingletons = isDiscreteSeriesType(getSeriesType(seriesIndex));
+    presentationGapAwareColumnsRemaining = 0;
 
     for (
       let gridIndex = firstGridIndex;
       gridIndex <= lastGridIndex && columnStartIdx <= endIdx;
       gridIndex++
     ) {
-      const isLastGridColumn = gridIndex === lastGridIndex;
-      const columnRight = anchor + (gridIndex + 1) * delta;
-      const nextColumnStart = isLastGridColumn
-        ? endIdx + 1
-        : lowerBoundDataX(columnRight, columnStartIdx, endIdx + 1);
+      const nextColumnStart = columnStarts[gridIndex - firstGridIndex];
       const columnEndIdx = nextColumnStart - 1;
 
       if (columnEndIdx >= columnStartIdx) {
@@ -4797,6 +5053,15 @@ export function createLineChartEngine(
       seriesIndex,
       lastGridIndex - firstGridIndex + 1,
     );
+    const columnStarts = resolvePresentationColumnStarts(
+      rangePresentationColumnStarts,
+      startIdx,
+      endIdx,
+      anchor,
+      delta,
+      firstGridIndex,
+      lastGridIndex,
+    );
     let columnCount = 0;
     let pointCount = 0;
     let columnStartIdx = startIdx;
@@ -4805,10 +5070,7 @@ export function createLineChartEngine(
       gridIndex <= lastGridIndex && columnStartIdx <= endIdx;
       gridIndex++
     ) {
-      const nextColumnStart =
-        gridIndex === lastGridIndex
-          ? endIdx + 1
-          : lowerBoundDataX(anchor + (gridIndex + 1) * delta, columnStartIdx, endIdx + 1);
+      const nextColumnStart = columnStarts[gridIndex - firstGridIndex];
       const columnEndIdx = nextColumnStart - 1;
       if (columnEndIdx >= columnStartIdx) {
         const written = writeHierarchicalRangePresentationColumn(
@@ -4907,6 +5169,7 @@ export function createLineChartEngine(
     lastPresentationQueryVisits = 0;
     lastPresentationLargestBucket = 1;
     lastPresentationGridDelta = NaN;
+    presentationRenderPass++;
     if (!dataX || lodLevelsBySeries.length === 0) return [];
 
     const visibleLength = endIdx - startIdx + 1;

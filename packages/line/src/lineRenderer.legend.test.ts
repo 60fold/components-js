@@ -1457,6 +1457,46 @@ describe("lineRenderer hierarchical presentation LOD", () => {
     expect(reads.count).toBeLessThan(x.length / 10);
   });
 
+  it("searches column boundaries once for every series sharing X", () => {
+    const countXReadsPerRedraw = (seriesCount: number): number => {
+      const { engine } = createPresentationHarness(
+        {
+          animated: false,
+          rangeSelector: { visible: false },
+          seriesOptions: Array.from({ length: seriesCount }, () => ({
+            type: "line",
+            color,
+            width: 1,
+          })),
+        },
+        420,
+      );
+      const { x, y } = createDenseIrregularData(20_000);
+      const reads = { count: 0 };
+      const countedX = new Proxy(x, {
+        get(target, property) {
+          if (typeof property === "string" && /^\d+$/.test(property)) reads.count++;
+          return Reflect.get(target, property, target);
+        },
+      });
+      engine.handleMessage("setData", {
+        x: countedX,
+        series: Array.from({ length: seriesCount }, () => y.slice()),
+      });
+      reads.count = 0;
+      engine.handleMessage("invalidateCache", {});
+      return reads.count;
+    };
+
+    const oneSeriesReads = countXReadsPerRedraw(1);
+    const eightSeriesReads = countXReadsPerRedraw(8);
+
+    expect(oneSeriesReads).toBeGreaterThan(1_000);
+    // A further series reads only its own raw column edges, which costs well
+    // under half of the first series' boundary search plus edges.
+    expect((eightSeriesReads - oneSeriesReads) / 7).toBeLessThan(oneSeriesReads / 2);
+  });
+
   it("matches direct raw gap compaction without bridging the gap", () => {
     const { engine, messages, contexts } = createPresentationHarness(
       {
