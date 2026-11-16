@@ -1549,6 +1549,32 @@ describe("lineRenderer hierarchical presentation LOD", () => {
     );
   });
 
+  it("builds coarser hierarchy levels from the level below instead of rescanning samples", () => {
+    const { engine } = createPresentationHarness(
+      {
+        animated: false,
+        rangeSelector: { visible: false },
+        seriesOptions: [{ type: "line", color, width: 1 }],
+      },
+      420,
+    );
+    const { x, y } = createDenseIrregularData(40_000);
+    const reads = { count: 0 };
+    const countedY = new Proxy(y, {
+      get(target, property) {
+        if (typeof property === "string" && /^\d+$/.test(property)) reads.count++;
+        return Reflect.get(target, property, target);
+      },
+    });
+
+    engine.handleMessage("setData", { x, series: [countedY] });
+
+    // Bounds, the coarsest level, and the finest summary level each scan the
+    // samples once. The four levels between them fold the level below.
+    expect(reads.count).toBeGreaterThan(x.length * 2);
+    expect(reads.count).toBeLessThan(x.length * 5);
+  });
+
   it("collapses singleton-only fragmentation instead of fabricating lines", () => {
     const { engine, messages, contexts } = createPresentationHarness(
       {

@@ -1299,6 +1299,9 @@ export function createLineChartEngine(
     series: Float64Array[];
     levels: LODLevel[][];
     rangeLevels: Array<RangeLODLevel[] | null>;
+    // Staged levels built ahead of publication, finest first, so each one can
+    // fold the level below instead of rescanning the raw samples.
+    staged?: LODBuild;
   }
   let activeLODBuild: LODBuild | null = null;
   let lodRebuildRequested = false;
@@ -2003,9 +2006,11 @@ export function createLineChartEngine(
       }
       for (let i = 0; i < dataLength; i++) {
         if (range) {
-          const low = getRangeLowerAt(s, i);
-          const high = getRangeUpperAt(s, i);
-          if (Number.isFinite(low) && Number.isFinite(high)) {
+          const edgeA = range.low[i];
+          const edgeB = range.high[i];
+          if (Number.isFinite(edgeA) && Number.isFinite(edgeB)) {
+            const low = edgeA <= edgeB ? edgeA : edgeB;
+            const high = edgeA <= edgeB ? edgeB : edgeA;
             if (low < globalYMin) globalYMin = low;
             if (high > globalYMax) globalYMax = high;
           } else {
@@ -2928,6 +2933,156 @@ export function createLineChartEngine(
     return target.length / 3 - startPoint;
   }
 
+  /**
+   * The next finer level of the active build, when that build already holds it
+   * for the same source. Absent for the finest summary level, for sparse
+   * hierarchies, and for a level built on its own.
+   */
+  function findFinerLODLevel<
+    T extends { bucketSize: number; sourceDataLength: number; sourceStartIndex: number },
+  >(levels: T[], bucketSize: number, sourceDataLength: number): T | null {
+    const levelIdx = LOD_BUCKET_SIZES.indexOf(bucketSize);
+    if (levelIdx < 2) return null;
+    const finerBucketSize = LOD_BUCKET_SIZES[levelIdx - 1];
+    for (const level of levels) {
+      if (
+        level.bucketSize === finerBucketSize &&
+        level.sourceDataLength === sourceDataLength &&
+        level.sourceStartIndex === activeLODBuild!.sourceStartIndex
+      ) {
+        return level;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Summarize one bucket from the finer buckets that tile it instead of from
+   * the raw samples. This is exact only when every finer bucket is an unbroken
+   * run of finite samples: its first and last points are then real samples and
+   * its two stored extremes, kept in source order, are its minimum and maximum.
+   * Returns false when any finer bucket holds a gap; the caller then scans the
+   * raw samples for this bucket.
+   */
+  function foldLineLODBucket(
+    finer: LODLevel,
+    firstChild: number,
+    childrenPerBucket: number,
+    target: Float64Array,
+    targetBase: number,
+  ): boolean {
+    const endChild = Math.min(firstChild + childrenPerBucket, finer.bucketCount);
+    if (firstChild >= endChild) return false;
+
+    const data = finer.data;
+    const gapKinds = finer.internalGapBuckets;
+    let minX = 0;
+    let minY = 0;
+    let minOrder = 0;
+    let maxX = 0;
+    let maxY = 0;
+    let maxOrder = 0;
+
+    for (let child = firstChild; child < endChild; child++) {
+      const base = child * 8;
+      const firstY = data[base + 1];
+      const lastY = data[base + 7];
+      // A gap at either edge is stored as a NaN first or last point.
+      if (gapKinds[child] !== 0 || firstY !== firstY || lastY !== lastY) return false;
+
+      const minFirst = data[base + 3] <= data[base + 5];
+      const minBase = base + (minFirst ? 2 : 4);
+      const maxBase = base + (minFirst ? 4 : 2);
+      const order = (child - firstChild) * 2;
+      if (child === firstChild || data[minBase + 1] < minY) {
+        minX = data[minBase];
+        minY = data[minBase + 1];
+        minOrder = order + (minFirst ? 0 : 1);
+      }
+      if (child === firstChild || data[maxBase + 1] > maxY) {
+        maxX = data[maxBase];
+        maxY = data[maxBase + 1];
+        maxOrder = order + (minFirst ? 1 : 0);
+      }
+    }
+
+    const firstBase = firstChild * 8;
+    const lastBase = (endChild - 1) * 8;
+    target[targetBase] = data[firstBase];
+    target[targetBase + 1] = data[firstBase + 1];
+    if (minOrder <= maxOrder) {
+      target[targetBase + 2] = minX;
+      target[targetBase + 3] = minY;
+      target[targetBase + 4] = maxX;
+      target[targetBase + 5] = maxY;
+    } else {
+      target[targetBase + 2] = maxX;
+      target[targetBase + 3] = maxY;
+      target[targetBase + 4] = minX;
+      target[targetBase + 5] = minY;
+    }
+    target[targetBase + 6] = data[lastBase + 6];
+    target[targetBase + 7] = data[lastBase + 7];
+    return true;
+  }
+
+  /** Range counterpart of foldLineLODBucket: lowest low and highest high. */
+  function foldRangeLODBucket(
+    finer: RangeLODLevel,
+    firstChild: number,
+    childrenPerBucket: number,
+    target: Float64Array,
+    targetBase: number,
+  ): boolean {
+    const endChild = Math.min(firstChild + childrenPerBucket, finer.bucketCount);
+    if (firstChild >= endChild) return false;
+
+    const data = finer.data;
+    const gapKinds = finer.internalGapBuckets;
+    let minBase = 0;
+    let minLow = 0;
+    let minOrder = 0;
+    let maxBase = 0;
+    let maxHigh = 0;
+    let maxOrder = 0;
+
+    for (let child = firstChild; child < endChild; child++) {
+      const base = child * 12;
+      const firstLow = data[base + 1];
+      const lastLow = data[base + 10];
+      if (gapKinds[child] !== 0 || firstLow !== firstLow || lastLow !== lastLow) return false;
+
+      // The stored extremes are the lowest-low and highest-high samples in
+      // source order; the one with the lower low is the lowest-low sample.
+      const minFirst = data[base + 4] <= data[base + 7];
+      const childMinBase = base + (minFirst ? 3 : 6);
+      const childMaxBase = base + (minFirst ? 6 : 3);
+      const order = (child - firstChild) * 2;
+      if (child === firstChild || data[childMinBase + 1] < minLow) {
+        minBase = childMinBase;
+        minLow = data[childMinBase + 1];
+        minOrder = order + (minFirst ? 0 : 1);
+      }
+      if (child === firstChild || data[childMaxBase + 2] > maxHigh) {
+        maxBase = childMaxBase;
+        maxHigh = data[childMaxBase + 2];
+        maxOrder = order + (minFirst ? 1 : 0);
+      }
+    }
+
+    const firstBase = firstChild * 12;
+    const lastBase = (endChild - 1) * 12 + 9;
+    const firstExtremeBase = minOrder <= maxOrder ? minBase : maxBase;
+    const secondExtremeBase = minOrder <= maxOrder ? maxBase : minBase;
+    for (let field = 0; field < 3; field++) {
+      target[targetBase + field] = data[firstBase + field];
+      target[targetBase + 3 + field] = data[firstExtremeBase + field];
+      target[targetBase + 6 + field] = data[secondExtremeBase + field];
+      target[targetBase + 9 + field] = data[lastBase + field];
+    }
+    return true;
+  }
+
   function buildRangeLODLevelForSeries(
     seriesIndex: number,
     bucketSize: number,
@@ -2943,8 +3098,27 @@ export function createLineChartEngine(
     let gapOffsets: Uint32Array | null = null;
     const renderOffsets = new Uint32Array(bucketCount + 1);
     const representativeRunScratch = new Int32Array(MAX_COMPACT_GAP_RUNS * GAP_RUN_FIELD_COUNT);
+    // Range columns are static-only, so logical and physical indices agree.
+    const range = rangeSeriesData[seriesIndex];
+    const lowSource = range ? range.low : emptyPresentationColumnData;
+    const highSource = range ? range.high : emptyPresentationColumnData;
+    const finerLevel = findFinerLODLevel(
+      activeLODBuild!.rangeLevels[seriesIndex] ?? [],
+      bucketSize,
+      sourceDataLength,
+    );
+    const childrenPerBucket = finerLevel ? bucketSize / finerLevel.bucketSize : 0;
 
     for (let b = 0; b < bucketCount; b++) {
+      if (
+        finerLevel &&
+        foldRangeLODBucket(finerLevel, b * childrenPerBucket, childrenPerBucket, lodData, b * 12)
+      ) {
+        if (gapOffsets) gapOffsets[b + 1] = gapValues.length / 3;
+        renderOffsets[b + 1] = renderOffsets[b] + 4;
+        continue;
+      }
+
       const start = b * bucketSize;
       const end = Math.min(start + bucketSize, sourceDataLength);
 
@@ -2957,9 +3131,11 @@ export function createLineChartEngine(
       let validCount = 0;
 
       for (let i = start; i < end; i++) {
-        const low = getRangeLowerAt(seriesIndex, i);
-        const high = getRangeUpperAt(seriesIndex, i);
-        if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+        const edgeA = lowSource[i];
+        const edgeB = highSource[i];
+        if (!Number.isFinite(edgeA) || !Number.isFinite(edgeB)) continue;
+        const low = edgeA <= edgeB ? edgeA : edgeB;
+        const high = edgeA <= edgeB ? edgeB : edgeA;
 
         validCount++;
         if (firstIdx === -1) {
@@ -3058,7 +3234,11 @@ export function createLineChartEngine(
     const bucketSize = LOD_BUCKET_SIZES[levelIdx];
     if (bucketSize >= sourceDataLength) return;
 
+    const xSource = activeLODBuild!.x;
     for (let s = 0; s < seriesConfig.count; s++) {
+      const ySource = activeLODBuild!.series[s];
+      const finerLevel = findFinerLODLevel(activeLODBuild!.levels[s], bucketSize, sourceDataLength);
+      const childrenPerBucket = finerLevel ? bucketSize / finerLevel.bucketSize : 0;
       const bucketCount = Math.ceil(sourceDataLength / bucketSize);
       // 8 floats per bucket: first(x,y), min/max ordered by x (x,y,x,y), last(x,y)
       const lodData = new Float64Array(bucketCount * 8);
@@ -3071,6 +3251,15 @@ export function createLineChartEngine(
       const preserveSingletonRuns = isDiscreteSeriesType(getSeriesType(s));
 
       for (let b = 0; b < bucketCount; b++) {
+        if (
+          finerLevel &&
+          foldLineLODBucket(finerLevel, b * childrenPerBucket, childrenPerBucket, lodData, b * 8)
+        ) {
+          if (gapOffsets) gapOffsets[b + 1] = gapValues.length / 2;
+          renderOffsets[b + 1] = renderOffsets[b] + 4;
+          continue;
+        }
+
         const start = b * bucketSize;
         const end = Math.min(start + bucketSize, sourceDataLength);
 
@@ -3084,7 +3273,7 @@ export function createLineChartEngine(
         let validCount = 0;
 
         for (let i = start; i < end; i++) {
-          const val = getLODYAt(s, i);
+          const val = ySource[i];
           if (!Number.isFinite(val)) continue;
 
           validCount++;
@@ -3122,20 +3311,20 @@ export function createLineChartEngine(
             lodData[baseIdx] = NaN;
             lodData[baseIdx + 1] = NaN;
           } else {
-            lodData[baseIdx] = getLODXAt(firstIdx);
-            lodData[baseIdx + 1] = getLODYAt(s, firstIdx);
+            lodData[baseIdx] = xSource[firstIdx];
+            lodData[baseIdx + 1] = ySource[firstIdx];
           }
 
           // Min/Max in temporal order
           if (minIdx <= maxIdx) {
-            lodData[baseIdx + 2] = getLODXAt(minIdx);
+            lodData[baseIdx + 2] = xSource[minIdx];
             lodData[baseIdx + 3] = minY;
-            lodData[baseIdx + 4] = getLODXAt(maxIdx);
+            lodData[baseIdx + 4] = xSource[maxIdx];
             lodData[baseIdx + 5] = maxY;
           } else {
-            lodData[baseIdx + 2] = getLODXAt(maxIdx);
+            lodData[baseIdx + 2] = xSource[maxIdx];
             lodData[baseIdx + 3] = maxY;
-            lodData[baseIdx + 4] = getLODXAt(minIdx);
+            lodData[baseIdx + 4] = xSource[minIdx];
             lodData[baseIdx + 5] = minY;
           }
 
@@ -3144,8 +3333,8 @@ export function createLineChartEngine(
             lodData[baseIdx + 6] = NaN;
             lodData[baseIdx + 7] = NaN;
           } else {
-            lodData[baseIdx + 6] = getLODXAt(lastIdx);
-            lodData[baseIdx + 7] = getLODYAt(s, lastIdx);
+            lodData[baseIdx + 6] = xSource[lastIdx];
+            lodData[baseIdx + 7] = ySource[lastIdx];
           }
 
           let gapPointCount = 0;
@@ -3221,6 +3410,59 @@ export function createLineChartEngine(
     }
   }
 
+  /**
+   * Build every staged level at or below highestLevelIdx into a private copy
+   * of the build, finest first. Only the finest level scans the raw samples;
+   * each coarser one folds the level below it.
+   */
+  function buildStagedLODLevels(highestLevelIdx: number, build: LODBuild): LODBuild {
+    const staged: LODBuild = {
+      sourceDataLength: build.sourceDataLength,
+      sourceStartIndex: build.sourceStartIndex,
+      x: build.x,
+      series: build.series,
+      levels: build.levels.map((levels) => [levels[0]]),
+      rangeLevels: build.rangeLevels.map((levels) => (levels ? [levels[0]] : null)),
+    };
+    activeLODBuild = staged;
+    try {
+      for (let idx = 1; idx <= highestLevelIdx; idx++) {
+        buildLODLevel(idx, build.sourceDataLength);
+      }
+    } finally {
+      activeLODBuild = build;
+    }
+    return staged;
+  }
+
+  function insertLODLevelByBucketSize<T extends { bucketSize: number }>(
+    levels: T[],
+    level: T,
+  ): void {
+    const insertIdx = levels.findIndex((existing) => existing.bucketSize > level.bucketSize);
+    if (insertIdx === -1) levels.push(level);
+    else levels.splice(insertIdx, 0, level);
+  }
+
+  /**
+   * Publish one staged level, coarsest first, exactly as when each level was
+   * built in its own task. The first call builds all of them ahead of time.
+   */
+  function publishStagedLODLevel(levelIdx: number, build: LODBuild): void {
+    build.staged ??= buildStagedLODLevels(levelIdx, build);
+    const bucketSize = LOD_BUCKET_SIZES[levelIdx];
+    for (let s = 0; s < build.levels.length; s++) {
+      const level = build.staged.levels[s]?.find((staged) => staged.bucketSize === bucketSize);
+      if (level) insertLODLevelByBucketSize(build.levels[s], level);
+
+      const rangeLevels = build.rangeLevels[s];
+      const rangeLevel = build.staged.rangeLevels[s]?.find(
+        (staged) => staged.bucketSize === bucketSize,
+      );
+      if (rangeLevels && rangeLevel) insertLODLevelByBucketSize(rangeLevels, rangeLevel);
+    }
+  }
+
   function buildRemainingLODs(startIdx: number, build: LODBuild) {
     if (stopped || activeLODBuild !== build) return;
 
@@ -3242,7 +3484,8 @@ export function createLineChartEngine(
     }
 
     if (ssr) {
-      for (let idx = startIdx; idx >= 1; idx--) {
+      // Finest first, so every level folds the one below it.
+      for (let idx = 1; idx <= startIdx; idx++) {
         buildLODLevel(idx, build.sourceDataLength);
         resetCachedYMinMax();
         if (lodLevelsBySeries === build.levels) lodLevelsBuilt = build.levels[0]?.length ?? 1;
@@ -3254,7 +3497,7 @@ export function createLineChartEngine(
     lodBuildTimer = rendererScheduler.scheduleTask(() => {
       if (stopped || activeLODBuild !== build) return;
       lodBuildTimer = null;
-      buildLODLevel(startIdx, build.sourceDataLength);
+      publishStagedLODLevel(startIdx, build);
       resetCachedYMinMax();
       if (lodLevelsBySeries === build.levels) lodLevelsBuilt = build.levels[0]?.length ?? 1;
       buildRemainingLODs(startIdx - 1, build);
